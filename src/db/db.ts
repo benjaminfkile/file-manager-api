@@ -1,5 +1,4 @@
 import knex, { Knex } from "knex";
-import path from "path";
 import { IAppSecrets, IDBSecrets } from "../interfaces";
 import health from "./health";
 
@@ -26,17 +25,10 @@ export async function initDb(
       port: 5432,
       ssl: { rejectUnauthorized: false },
     },
-    migrations: {
-      directory: path.join(__dirname, "migrations"),
-    },
   });
 
   const dbHealth = await health.getDBConnectionHealth(db, true);
   console.log(dbHealth.logs);
-
-  if (appSecrets.NODE_ENV !== "production") {
-    await db.migrate.latest();
-  }
 
   return db;
 }
