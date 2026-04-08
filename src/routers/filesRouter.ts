@@ -3,8 +3,8 @@ import multer, { memoryStorage } from "multer";
 import { v4 as uuidv4 } from "uuid";
 import { IAppSecrets, IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
-import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDeleteFile, restoreFile } from "../services/fileService";
-import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl } from "../aws/s3Service";
+import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDeleteFile, restoreFile, hardDeleteFile } from "../services/fileService";
+import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject } from "../aws/s3Service";
 import { canAccessFile } from "../utils/accessControl";
 import { getDeletedFolderById } from "../services/folderService";
 
@@ -369,6 +369,48 @@ filesRouter
         error: false,
         data: restoredFile,
       });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  });
+
+/**
+ * DELETE /api/files/:id/permanent
+ * Permanently delete a file. Only the owner can permanently delete.
+ * Deletes the S3 object first, then removes the DB record (cascades to share records).
+ * Returns 204 No Content.
+ */
+filesRouter
+  .route("/:id/permanent")
+  .delete(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { id } = req.params;
+
+      const file = await getFileById(id);
+      if (!file) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "File not found",
+        });
+      }
+
+      if (file.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Access denied",
+        });
+      }
+
+      await hardDeleteFile(id, deleteObject);
+
+      return res.status(204).send();
     } catch (error) {
       return res.status(500).json({
         status: "error",

@@ -102,6 +102,6 @@ export async function hardDeleteFile(
 
   if (!file) return;
 
-  await db(FILES).where({ id: fileId }).del();
   await s3DeleteFn(file.s3_key);
+  await db(FILES).where({ id: fileId }).del();
 }
