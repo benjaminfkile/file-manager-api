@@ -2,6 +2,7 @@ import express, { Request, Response } from "express";
 import bcrypt from "bcrypt";
 import { getDb } from "../db/db";
 import { IUser } from "../interfaces";
+import protectedRoute from "../middleware/protectedRoute";
 
 const usersRouter = express.Router();
 
@@ -71,6 +72,26 @@ usersRouter.route("/register").post(async (req: Request, res: Response) => {
       errorMsg: (error as Error).message,
     });
   }
+});
+
+/**
+ * GET /api/users/me
+ * Returns the currently authenticated user. Behind protectedRoute.
+ */
+usersRouter.route("/me").get(protectedRoute(), (req: Request, res: Response) => {
+  const user = req.user as IUser;
+
+  return res.status(200).json({
+    status: "ok",
+    error: false,
+    data: {
+      id: user.id,
+      first_name: user.first_name,
+      last_name: user.last_name,
+      username: user.username,
+      created_at: user.created_at,
+    },
+  });
 });
 
 export default usersRouter;
