@@ -30,6 +30,33 @@ export interface IDBSecrets {
   password: string;
 }
 
+// ---- Folder record from the folders table ----
+export interface IFolder {
+  id: string;
+  user_id: string;
+  parent_folder_id: string | null;
+  name: string;
+  is_deleted: boolean;
+  deleted_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ---- File record from the files table ----
+export interface IFile {
+  id: string;
+  user_id: string;
+  folder_id: string | null;
+  name: string;
+  s3_key: string;
+  size_bytes: number;
+  mime_type: string;
+  is_deleted: boolean;
+  deleted_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // ---- DB health check result ----
 export interface IDBHealth {
   connected: boolean;
