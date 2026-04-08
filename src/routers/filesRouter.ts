@@ -7,7 +7,7 @@ import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDele
 import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject } from "../aws/s3Service";
 import { canAccessFile } from "../utils/accessControl";
 import { getDeletedFolderById } from "../services/folderService";
-import { shareFile, unshareFile } from "../services/sharingService";
+import { shareFile, unshareFile, getFileSharesWithUsers } from "../services/sharingService";
 import { getDb } from "../db/db";
 
 const filesRouter = express.Router();
@@ -549,6 +549,47 @@ filesRouter
         status: "error",
         error: true,
         errorMsg: message,
+      });
+    }
+  });
+
+/**
+ * GET /api/files/:id/shares
+ * List users a file is shared with. Only the file owner can see the share list.
+ * Returns { sharedWith: [{ id, username, first_name, last_name, sharedAt }] }
+ */
+filesRouter
+  .route("/:id/shares")
+  .get(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const fileId = req.params.id;
+
+      const file = await getFileById(fileId);
+      if (!file) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "File not found",
+        });
+      }
+
+      if (file.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Only the file owner can view shares",
+        });
+      }
+
+      const sharedWith = await getFileSharesWithUsers(fileId);
+
+      return res.status(200).json({ sharedWith });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
       });
     }
   });

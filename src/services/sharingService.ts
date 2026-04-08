@@ -62,6 +62,24 @@ export async function getFileShares(fileId: string): Promise<IFileShare[]> {
   return db(FILE_SHARES).where({ file_id: fileId }).orderBy("created_at", "asc");
 }
 
+/** Get all shares for a file with user details. */
+export async function getFileSharesWithUsers(
+  fileId: string
+): Promise<{ id: string; username: string; first_name: string; last_name: string; sharedAt: string }[]> {
+  const db = getDb();
+  return db(FILE_SHARES)
+    .join(USERS, `${FILE_SHARES}.shared_with_user_id`, `${USERS}.id`)
+    .where(`${FILE_SHARES}.file_id`, fileId)
+    .orderBy(`${FILE_SHARES}.created_at`, "asc")
+    .select(
+      `${USERS}.id`,
+      `${USERS}.username`,
+      `${USERS}.first_name`,
+      `${USERS}.last_name`,
+      `${FILE_SHARES}.created_at as sharedAt`
+    );
+}
+
 /** Share a folder with another user by username. */
 export async function shareFolder(
   folderId: string,
