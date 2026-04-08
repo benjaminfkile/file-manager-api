@@ -10,6 +10,7 @@ import usersRouter from "./routers/usersRouter";
 import foldersRouter from "./routers/foldersRouter";
 import filesRouter from "./routers/filesRouter";
 import recycleBinRouter from "./routers/recycleBinRouter";
+import sharedRouter from "./routers/sharedRouter";
 
 const app: Express = express();
 
@@ -28,6 +29,7 @@ app.use("/api/users", usersRouter);
 app.use("/api/folders", foldersRouter);
 app.use("/api/files", filesRouter);
 app.use("/api/recycle-bin", recycleBinRouter);
+app.use("/api/shared", sharedRouter);
 
 app.use(function errorHandler(
   err: Error,
