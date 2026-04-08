@@ -7,7 +7,7 @@ import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDele
 import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject } from "../aws/s3Service";
 import { canAccessFile } from "../utils/accessControl";
 import { getDeletedFolderById } from "../services/folderService";
-import { shareFile } from "../services/sharingService";
+import { shareFile, unshareFile } from "../services/sharingService";
 import { getDb } from "../db/db";
 
 const filesRouter = express.Router();
@@ -499,6 +499,56 @@ filesRouter
         status: "error",
         error: true,
         errorMsg: (error as Error).message,
+      });
+    }
+  });
+
+/**
+ * DELETE /api/files/:id/share/:sharedUserId
+ * Remove a file share. Only the file owner can remove a share.
+ * Returns 204 on success.
+ */
+filesRouter
+  .route("/:id/share/:sharedUserId")
+  .delete(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const fileId = req.params.id;
+      const sharedUserId = req.params.sharedUserId;
+
+      const file = await getFileById(fileId);
+      if (!file) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "File not found",
+        });
+      }
+
+      if (file.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Only the file owner can remove a share",
+        });
+      }
+
+      await unshareFile(fileId, user.id, sharedUserId);
+
+      return res.status(204).send();
+    } catch (error) {
+      const message = (error as Error).message;
+      if (message === "File share not found") {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: message,
+        });
+      }
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: message,
       });
     }
   });
