@@ -10,6 +10,7 @@ export interface IAppSecrets {
   CLOUDFRONT_KEY_PAIR_ID?: string;
   CLOUDFRONT_PRIVATE_KEY?: string;
   MAX_UPLOAD_BYTES: number;
+  PREVIEW_URL_TTL?: number;
 }
 
 // ---- User record from the users table ----

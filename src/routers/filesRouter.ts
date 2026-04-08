@@ -142,4 +142,68 @@ filesRouter
     }
   });
 
+/**
+ * GET /api/files/:id/preview
+ * Generate a signed URL for previewing media (images, video) in the browser.
+ * Returns { url, mimeType, expiresAt } with a configurable TTL (default 15 minutes).
+ * Uses CloudFront if configured, otherwise falls back to S3 presigned URL.
+ */
+filesRouter
+  .route("/:id/preview")
+  .get(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const fileId = req.params.id;
+
+      const file = await getFileById(fileId);
+      if (!file) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "File not found",
+        });
+      }
+
+      const hasAccess = await canAccessFile(user.id, fileId);
+      if (!hasAccess) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Forbidden",
+        });
+      }
+
+      const secrets = req.app.get("secrets") as IAppSecrets;
+      const expiresIn = secrets.PREVIEW_URL_TTL ?? 900; // default 15 minutes
+
+      let url: string;
+
+      if (
+        secrets.CLOUDFRONT_DOMAIN &&
+        secrets.CLOUDFRONT_KEY_PAIR_ID &&
+        secrets.CLOUDFRONT_PRIVATE_KEY
+      ) {
+        url = generateSignedCloudFrontUrl(
+          secrets.CLOUDFRONT_DOMAIN,
+          file.s3_key,
+          secrets.CLOUDFRONT_KEY_PAIR_ID,
+          secrets.CLOUDFRONT_PRIVATE_KEY,
+          expiresIn
+        );
+      } else {
+        url = await generatePresignedDownloadUrl(file.s3_key, expiresIn);
+      }
+
+      const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+
+      return res.status(200).json({ url, mimeType: file.mime_type, expiresAt });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  });
+
 export default filesRouter;
