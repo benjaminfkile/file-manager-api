@@ -1,7 +1,7 @@
 import express, { Request, Response } from "express";
 import { IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
-import { createFolder, getFolderById } from "../services/folderService";
+import { createFolder, getFolderById, listRootFolders } from "../services/folderService";
 
 const foldersRouter = express.Router();
 
@@ -12,6 +12,19 @@ const foldersRouter = express.Router();
  */
 foldersRouter
   .route("/")
+  .get(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const folders = await listRootFolders(user.id);
+      return res.status(200).json({ folders });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  })
   .post(protectedRoute(), async (req: Request, res: Response) => {
     try {
       const user = req.user as IUser;
