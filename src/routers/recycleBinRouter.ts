@@ -3,6 +3,7 @@ import protectedRoute from "../middleware/protectedRoute";
 import { listDeletedFiles } from "../services/fileService";
 import { listDeletedFolders } from "../services/folderService";
 import { getDb } from "../db/db";
+import { deleteObjects } from "../aws/s3Service";
 import { IUser } from "../interfaces";
 
 const recycleBinRouter = express.Router();
@@ -56,6 +57,41 @@ recycleBinRouter
     } catch (err) {
       console.error("[POST /api/recycle-bin/restore-all]", err);
       res.status(500).json({ error: true, errorMsg: "Failed to restore all items." });
+    }
+  });
+
+/**
+ * DELETE /api/recycle-bin/empty
+ * Permanently delete all soft-deleted files and folders owned by the current user.
+ * Removes objects from S3, then deletes all soft-deleted records from the DB.
+ */
+recycleBinRouter
+  .route("/empty")
+  .delete(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const db = getDb();
+
+      const s3Keys: string[] = await db("files")
+        .where({ user_id: user.id, is_deleted: true })
+        .pluck("s3_key");
+
+      await deleteObjects(s3Keys);
+
+      await db.transaction(async (trx) => {
+        await trx("files")
+          .where({ user_id: user.id, is_deleted: true })
+          .del();
+
+        await trx("folders")
+          .where({ user_id: user.id, is_deleted: true })
+          .del();
+      });
+
+      res.status(204).send();
+    } catch (err) {
+      console.error("[DELETE /api/recycle-bin/empty]", err);
+      res.status(500).json({ error: true, errorMsg: "Failed to empty recycle bin." });
     }
   });
 
