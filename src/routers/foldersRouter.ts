@@ -1,9 +1,10 @@
 import express, { Request, Response } from "express";
 import { IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
-import { createFolder, getDeletedFolderById, getFolderById, hardDeleteFolder, listFolderContents, listRootFolders, renameFolder, restoreFolder, softDeleteFolder } from "../services/folderService";
-import { deleteObjects } from "../aws/s3Service";
+import { createFolder, collectFolderFiles, getDeletedFolderById, getFolderById, hardDeleteFolder, listFolderContents, listRootFolders, renameFolder, restoreFolder, softDeleteFolder } from "../services/folderService";
+import { deleteObjects, getObjectStream } from "../aws/s3Service";
 import { canAccessFolder } from "../utils/accessControl";
+import archiver from "archiver";
 
 const foldersRouter = express.Router();
 
@@ -223,6 +224,75 @@ foldersRouter
         error: true,
         errorMsg: (error as Error).message,
       });
+    }
+  });
+
+/**
+ * GET /api/folders/:id/download
+ * Download a folder as a zip archive.
+ * User must own or have shared access to the folder.
+ */
+foldersRouter
+  .route("/:id/download")
+  .get(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { id } = req.params;
+
+      const folder = await getFolderById(id);
+
+      if (!folder) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "Folder not found",
+        });
+      }
+
+      const hasAccess = await canAccessFolder(user.id, id);
+
+      if (!hasAccess) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Access denied",
+        });
+      }
+
+      const files = await collectFolderFiles(id);
+
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${folder.name}.zip"`
+      );
+
+      const archive = archiver("zip", { zlib: { level: 5 } });
+
+      archive.on("error", (err) => {
+        res.status(500).json({
+          status: "error",
+          error: true,
+          errorMsg: err.message,
+        });
+      });
+
+      archive.pipe(res);
+
+      for (const file of files) {
+        const stream = await getObjectStream(file.s3_key);
+        archive.append(stream, { name: file.zipPath });
+      }
+
+      await archive.finalize();
+    } catch (error) {
+      if (!res.headersSent) {
+        return res.status(500).json({
+          status: "error",
+          error: true,
+          errorMsg: (error as Error).message,
+        });
+      }
     }
   });
 
