@@ -6,6 +6,7 @@ import express, { Express, NextFunction, Request, Response } from "express";
 //import cors from "cors";
 //import helmet from "helmet";
 import healthRouter from "./routers/healthRouter";
+import usersRouter from "./routers/usersRouter";
 
 const app: Express = express();
 
@@ -20,9 +21,7 @@ app.get("/", (req: Request, res: Response) => {
 });
 
 app.use("/api/health", healthRouter);
-
-// TODO: Register additional routers here
-// app.use("/api/example", exampleRouter);
+app.use("/api/users", usersRouter);
 
 app.use(function errorHandler(
   err: Error,
