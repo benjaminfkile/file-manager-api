@@ -2,7 +2,7 @@ import express, { Request, Response } from "express";
 import { IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
 import { createFolder, collectFolderFiles, getDeletedFolderById, getFolderById, hardDeleteFolder, listFolderContents, listRootFolders, renameFolder, restoreFolder, softDeleteFolder } from "../services/folderService";
-import { shareFolder, unshareFolder } from "../services/sharingService";
+import { shareFolder, unshareFolder, getFolderShares } from "../services/sharingService";
 import { getDb } from "../db/db";
 import { deleteObjects, getObjectStream } from "../aws/s3Service";
 import { canAccessFolder } from "../utils/accessControl";
@@ -474,6 +474,67 @@ foldersRouter
         status: "error",
         error: true,
         errorMsg: (error as Error).message,
+      });
+    }
+  });
+
+/**
+ * GET /api/folders/:id/shares
+ * List users a folder is shared with. Only the folder owner can view.
+ * Returns { sharedWith: [{ id, username, first_name, last_name, sharedAt }] }
+ */
+foldersRouter
+  .route("/:id/shares")
+  .get(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const folderId = req.params.id;
+
+      const folder = await getFolderById(folderId);
+      if (!folder) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "Folder not found",
+        });
+      }
+
+      if (folder.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Only the folder owner can view shares",
+        });
+      }
+
+      const shares = await getFolderShares(folderId);
+
+      const db = getDb();
+      const userIds = shares.map((s) => s.shared_with_user_id);
+      const users = userIds.length
+        ? await db("users").whereIn("id", userIds).select("id", "username", "first_name", "last_name")
+        : [];
+
+      const userMap = new Map(users.map((u: { id: string }) => [u.id, u]));
+
+      const sharedWith = shares.map((s) => {
+        const u = userMap.get(s.shared_with_user_id) as { id: string; username: string; first_name: string; last_name: string } | undefined;
+        return {
+          id: s.shared_with_user_id,
+          username: u?.username ?? "",
+          first_name: u?.first_name ?? "",
+          last_name: u?.last_name ?? "",
+          sharedAt: s.created_at,
+        };
+      });
+
+      return res.status(200).json({ sharedWith });
+    } catch (error) {
+      const message = (error as Error).message;
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: message,
       });
     }
   });
