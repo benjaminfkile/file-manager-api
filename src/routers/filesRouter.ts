@@ -3,8 +3,9 @@ import multer, { memoryStorage } from "multer";
 import { v4 as uuidv4 } from "uuid";
 import { IAppSecrets, IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
-import { createFileRecord } from "../services/fileService";
-import { buildS3Key, uploadObject } from "../aws/s3Service";
+import { createFileRecord, getFileById } from "../services/fileService";
+import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl } from "../aws/s3Service";
+import { canAccessFile } from "../utils/accessControl";
 
 const filesRouter = express.Router();
 
@@ -71,6 +72,67 @@ filesRouter
       );
 
       return res.status(201).json({ file: record });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  });
+
+/**
+ * GET /api/files/:id/download
+ * Generate a short-lived signed URL for downloading a file.
+ * Uses CloudFront if configured, otherwise falls back to S3 presigned URL.
+ */
+filesRouter
+  .route("/:id/download")
+  .get(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const fileId = req.params.id;
+
+      const file = await getFileById(fileId);
+      if (!file) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "File not found",
+        });
+      }
+
+      const hasAccess = await canAccessFile(user.id, fileId);
+      if (!hasAccess) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Forbidden",
+        });
+      }
+
+      const secrets = req.app.get("secrets") as IAppSecrets;
+      const expiresIn = 60; // 60 seconds
+
+      let url: string;
+
+      if (
+        secrets.CLOUDFRONT_DOMAIN &&
+        secrets.CLOUDFRONT_KEY_PAIR_ID &&
+        secrets.CLOUDFRONT_PRIVATE_KEY
+      ) {
+        url = generateSignedCloudFrontUrl(
+          secrets.CLOUDFRONT_DOMAIN,
+          file.s3_key,
+          secrets.CLOUDFRONT_KEY_PAIR_ID,
+          secrets.CLOUDFRONT_PRIVATE_KEY,
+          expiresIn
+        );
+      } else {
+        url = await generatePresignedDownloadUrl(file.s3_key, expiresIn);
+      }
+
+      return res.status(200).json({ url });
     } catch (error) {
       return res.status(500).json({
         status: "error",
