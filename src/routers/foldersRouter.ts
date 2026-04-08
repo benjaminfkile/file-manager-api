@@ -103,9 +103,9 @@ foldersRouter
       const user = req.user as IUser;
       const { id } = req.params;
 
-      const folder = await getFolderById(id);
+      const hasAccess = await canAccessFolder(user.id, id);
 
-      if (!folder) {
+      if (!hasAccess) {
         return res.status(404).json({
           status: "error",
           error: true,
@@ -113,16 +113,7 @@ foldersRouter
         });
       }
 
-      const hasAccess = await canAccessFolder(user.id, id);
-
-      if (!hasAccess) {
-        return res.status(403).json({
-          status: "error",
-          error: true,
-          errorMsg: "Access denied",
-        });
-      }
-
+      const folder = await getFolderById(id);
       const { subFolders, files } = await listFolderContents(id);
 
       return res.status(200).json({ folder, subFolders, files });
@@ -241,9 +232,9 @@ foldersRouter
       const user = req.user as IUser;
       const { id } = req.params;
 
-      const folder = await getFolderById(id);
+      const hasAccess = await canAccessFolder(user.id, id);
 
-      if (!folder) {
+      if (!hasAccess) {
         return res.status(404).json({
           status: "error",
           error: true,
@@ -251,16 +242,7 @@ foldersRouter
         });
       }
 
-      const hasAccess = await canAccessFolder(user.id, id);
-
-      if (!hasAccess) {
-        return res.status(403).json({
-          status: "error",
-          error: true,
-          errorMsg: "Access denied",
-        });
-      }
-
+      const folder = (await getFolderById(id))!;
       const files = await collectFolderFiles(id);
 
       res.setHeader("Content-Type", "application/octet-stream");
