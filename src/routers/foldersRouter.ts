@@ -2,7 +2,7 @@ import express, { Request, Response } from "express";
 import { IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
 import { createFolder, collectFolderFiles, getDeletedFolderById, getFolderById, hardDeleteFolder, listFolderContents, listRootFolders, renameFolder, restoreFolder, softDeleteFolder } from "../services/folderService";
-import { shareFolder } from "../services/sharingService";
+import { shareFolder, unshareFolder } from "../services/sharingService";
 import { getDb } from "../db/db";
 import { deleteObjects, getObjectStream } from "../aws/s3Service";
 import { canAccessFolder } from "../utils/accessControl";
@@ -474,6 +474,56 @@ foldersRouter
         status: "error",
         error: true,
         errorMsg: (error as Error).message,
+      });
+    }
+  });
+
+/**
+ * DELETE /api/folders/:id/share/:sharedUserId
+ * Remove a folder share. Only the folder owner can remove a share.
+ * Returns 204 on success.
+ */
+foldersRouter
+  .route("/:id/share/:sharedUserId")
+  .delete(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const folderId = req.params.id;
+      const sharedUserId = req.params.sharedUserId;
+
+      const folder = await getFolderById(folderId);
+      if (!folder) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "Folder not found",
+        });
+      }
+
+      if (folder.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Only the folder owner can remove a share",
+        });
+      }
+
+      await unshareFolder(folderId, user.id, sharedUserId);
+
+      return res.status(204).send();
+    } catch (error) {
+      const message = (error as Error).message;
+      if (message === "Folder share not found") {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: message,
+        });
+      }
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: message,
       });
     }
   });
