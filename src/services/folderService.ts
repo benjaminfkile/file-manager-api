@@ -32,12 +32,29 @@ export async function getFolderById(
   return folder ?? null;
 }
 
-/** List a user's root-level folders (no parent, non-deleted). */
+/** List a user's root-level folders (no parent, non-deleted) plus folders shared with them at root level. */
 export async function listRootFolders(userId: string): Promise<IFolder[]> {
   const db = getDb();
-  return db(FOLDERS)
-    .where({ user_id: userId, parent_folder_id: null, is_deleted: false })
-    .orderBy("name", "asc");
+  const [owned, shared] = await Promise.all([
+    db(FOLDERS)
+      .where({ user_id: userId, parent_folder_id: null, is_deleted: false })
+      .orderBy("name", "asc"),
+    db(FOLDERS)
+      .join("folder_shares", "folders.id", "folder_shares.folder_id")
+      .where({
+        "folder_shares.shared_with_user_id": userId,
+        "folders.parent_folder_id": null,
+        "folders.is_deleted": false,
+      })
+      .select("folders.*")
+      .orderBy("folders.name", "asc"),
+  ]);
+
+  // Merge, deduplicate by id, and sort by name
+  const map = new Map<string, IFolder>();
+  for (const f of owned) map.set(f.id, f);
+  for (const f of shared) if (!map.has(f.id)) map.set(f.id, f);
+  return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** List the immediate child folders and files inside a folder. */
