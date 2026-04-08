@@ -1,6 +1,6 @@
 import express, { Request, Response } from "express";
 import multer, { memoryStorage } from "multer";
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID } from "crypto";
 import { IAppSecrets, IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
 import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDeleteFile, restoreFile, hardDeleteFile } from "../services/fileService";
@@ -60,7 +60,7 @@ filesRouter
 
       const folderId: string | null = req.body.folderId || null;
       const filename: string = req.body.name || file.originalname;
-      const fileId = uuidv4();
+      const fileId = randomUUID();
       const s3Key = buildS3Key(user.id, fileId, filename);
 
       await uploadObject(s3Key, file.buffer, file.mimetype, file.size);

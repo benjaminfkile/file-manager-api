@@ -5,7 +5,10 @@ import { IFile, IUser } from "../src/interfaces";
 /*  Module mocks that must be declared before app import               */
 /* ------------------------------------------------------------------ */
 
-jest.mock("uuid", () => ({ v4: () => "mock-uuid" }));
+jest.mock("crypto", () => ({
+  ...jest.requireActual("crypto"),
+  randomUUID: () => "mock-uuid",
+}));
 
 /* ------------------------------------------------------------------ */
 /*  Fake data                                                         */
