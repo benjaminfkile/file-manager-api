@@ -91,9 +91,22 @@ export async function softDeleteFile(fileId: string): Promise<void> {
     .update({ is_deleted: true, deleted_at: now, updated_at: now });
 }
 
-/** Restore a soft-deleted file. */
+/** Restore a soft-deleted file. Throws if the parent folder is also soft-deleted. */
 export async function restoreFile(fileId: string): Promise<void> {
   const db = getDb();
+
+  const file = await db(FILES).where({ id: fileId }).select("folder_id").first();
+  if (file?.folder_id) {
+    const deletedParent = await db("folders")
+      .where({ id: file.folder_id, is_deleted: true })
+      .first();
+    if (deletedParent) {
+      throw new Error(
+        "The parent folder is also in the recycle bin. Restore the parent folder first."
+      );
+    }
+  }
+
   const now = new Date().toISOString();
   await db(FILES)
     .where({ id: fileId })
