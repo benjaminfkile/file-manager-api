@@ -35,6 +35,20 @@ export async function getFileById(fileId: string): Promise<IFile | null> {
   return file ?? null;
 }
 
+/** List top-level soft-deleted files for a user (files whose folder is NULL or non-deleted). */
+export async function listDeletedFiles(userId: string): Promise<IFile[]> {
+  const db = getDb();
+  return db(FILES)
+    .where({ user_id: userId, is_deleted: true })
+    .andWhere(function () {
+      this.whereNull("folder_id").orWhereIn(
+        "folder_id",
+        db("folders").select("id").where({ is_deleted: false })
+      );
+    })
+    .orderBy("deleted_at", "desc");
+}
+
 /** Fetch a single soft-deleted file by its id. */
 export async function getDeletedFileById(fileId: string): Promise<IFile | null> {
   const db = getDb();
