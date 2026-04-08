@@ -94,4 +94,45 @@ usersRouter.route("/me").get(protectedRoute(), (req: Request, res: Response) => 
   });
 });
 
+/**
+ * GET /api/users/search?q=<partial_username>
+ * Searches users by username (ILIKE). Excludes the requesting user.
+ * Behind protectedRoute.
+ */
+usersRouter
+  .route("/search")
+  .get(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const { q } = req.query;
+
+      if (!q || typeof q !== "string") {
+        return res.status(400).json({
+          status: "error",
+          error: true,
+          errorMsg: "Query parameter 'q' is required",
+        });
+      }
+
+      const currentUser = req.user as IUser;
+      const db = getDb();
+
+      const users = await db<IUser>("users")
+        .select("id", "username", "first_name", "last_name")
+        .whereRaw("username ILIKE ?", [`%${q}%`])
+        .andWhere("id", "!=", currentUser.id);
+
+      return res.status(200).json({
+        status: "ok",
+        error: false,
+        data: users,
+      });
+    } catch (error) {
+      res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  });
+
 export default usersRouter;
