@@ -58,6 +58,24 @@ export interface IFile {
   updated_at: string;
 }
 
+// ---- File share record from the file_shares table ----
+export interface IFileShare {
+  id: string;
+  file_id: string;
+  owner_user_id: string;
+  shared_with_user_id: string;
+  created_at: string;
+}
+
+// ---- Folder share record from the folder_shares table ----
+export interface IFolderShare {
+  id: string;
+  folder_id: string;
+  owner_user_id: string;
+  shared_with_user_id: string;
+  created_at: string;
+}
+
 // ---- DB health check result ----
 export interface IDBHealth {
   connected: boolean;
