@@ -32,6 +32,17 @@ export async function getFolderById(
   return folder ?? null;
 }
 
+/** Fetch a single soft-deleted folder by its id. */
+export async function getDeletedFolderById(
+  folderId: string
+): Promise<IFolder | null> {
+  const db = getDb();
+  const folder = await db(FOLDERS)
+    .where({ id: folderId, is_deleted: true })
+    .first();
+  return folder ?? null;
+}
+
 /** List a user's root-level folders (no parent, non-deleted) plus folders shared with them at root level. */
 export async function listRootFolders(userId: string): Promise<IFolder[]> {
   const db = getDb();
