@@ -35,6 +35,15 @@ export async function getFileById(fileId: string): Promise<IFile | null> {
   return file ?? null;
 }
 
+/** Fetch a single soft-deleted file by its id. */
+export async function getDeletedFileById(fileId: string): Promise<IFile | null> {
+  const db = getDb();
+  const file = await db(FILES)
+    .where({ id: fileId, is_deleted: true })
+    .first();
+  return file ?? null;
+}
+
 /** List all non-deleted files in a folder for a given user. */
 export async function listFilesInFolder(
   folderId: string,
