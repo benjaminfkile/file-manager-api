@@ -9,6 +9,21 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { Readable } from "stream";
 
+/**
+ * S3 key naming strategy
+ *
+ * All S3 objects follow this key structure to prevent collisions:
+ *
+ *   files/{userId}/{fileId}/{originalFilename}
+ *
+ * - `userId`   – the authenticated user's unique identifier
+ * - `fileId`   – a unique identifier for the file record
+ * - `filename` – the original name of the uploaded file
+ */
+export function buildS3Key(userId: string, fileId: string, filename: string): string {
+  return `files/${userId}/${fileId}/${filename}`;
+}
+
 let s3: S3Client | null = null;
 let bucket: string | null = null;
 
