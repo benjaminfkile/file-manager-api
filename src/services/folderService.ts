@@ -57,21 +57,20 @@ export async function listRootFolders(userId: string): Promise<IFolder[]> {
   return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** List the immediate child folders and files inside a folder. */
+/** List the immediate non-deleted child folders and files inside a folder. */
 export async function listFolderContents(
-  folderId: string,
-  userId: string
-): Promise<{ folders: IFolder[]; files: IFile[] }> {
+  folderId: string
+): Promise<{ subFolders: IFolder[]; files: IFile[] }> {
   const db = getDb();
-  const [folders, files] = await Promise.all([
+  const [subFolders, files] = await Promise.all([
     db(FOLDERS)
-      .where({ parent_folder_id: folderId, user_id: userId, is_deleted: false })
+      .where({ parent_folder_id: folderId, is_deleted: false })
       .orderBy("name", "asc"),
     db(FILES)
-      .where({ folder_id: folderId, user_id: userId, is_deleted: false })
+      .where({ folder_id: folderId, is_deleted: false })
       .orderBy("name", "asc"),
   ]);
-  return { folders, files };
+  return { subFolders, files };
 }
 
 /** Rename a folder. */
