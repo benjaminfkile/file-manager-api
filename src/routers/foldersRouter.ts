@@ -1,7 +1,7 @@
 import express, { Request, Response } from "express";
 import { IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
-import { createFolder, getFolderById, listFolderContents, listRootFolders, renameFolder, softDeleteFolder } from "../services/folderService";
+import { createFolder, getDeletedFolderById, getFolderById, listFolderContents, listRootFolders, renameFolder, restoreFolder, softDeleteFolder } from "../services/folderService";
 import { canAccessFolder } from "../utils/accessControl";
 
 const foldersRouter = express.Router();
@@ -216,6 +216,68 @@ foldersRouter
       await softDeleteFolder(id);
 
       return res.status(204).send();
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  });
+
+/**
+ * POST /api/folders/:id/restore
+ * Restore a soft-deleted folder from the recycle bin.
+ * Only the owner can restore. If the parent folder is also soft-deleted, returns 409.
+ */
+foldersRouter
+  .route("/:id/restore")
+  .post(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { id } = req.params;
+
+      const folder = await getDeletedFolderById(id);
+
+      if (!folder) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "Folder not found",
+        });
+      }
+
+      // Only the owner can restore
+      if (folder.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Access denied",
+        });
+      }
+
+      // If the parent folder is also soft-deleted, block the restore
+      if (folder.parent_folder_id) {
+        const parentFolder = await getDeletedFolderById(folder.parent_folder_id);
+        if (parentFolder) {
+          return res.status(409).json({
+            status: "error",
+            error: true,
+            errorMsg:
+              "The parent folder is also in the recycle bin. Restore the parent folder first.",
+          });
+        }
+      }
+
+      await restoreFolder(id);
+
+      const restoredFolder = await getFolderById(id);
+
+      return res.status(200).json({
+        status: "ok",
+        error: false,
+        data: restoredFolder,
+      });
     } catch (error) {
       return res.status(500).json({
         status: "error",
