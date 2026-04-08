@@ -3,7 +3,7 @@ import multer, { memoryStorage } from "multer";
 import { v4 as uuidv4 } from "uuid";
 import { IAppSecrets, IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
-import { createFileRecord, getFileById, renameFile } from "../services/fileService";
+import { createFileRecord, getFileById, renameFile, softDeleteFile } from "../services/fileService";
 import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl } from "../aws/s3Service";
 import { canAccessFile } from "../utils/accessControl";
 
@@ -270,6 +270,45 @@ filesRouter
         error: false,
         data: updatedFile,
       });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  })
+  /**
+   * DELETE /api/files/:id
+   * Soft-delete a file (move to recycle bin). Only the owner can delete.
+   * Sets is_deleted = true and deleted_at = now(). Does NOT remove from S3.
+   * Returns 204 No Content.
+   */
+  .delete(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { id } = req.params;
+
+      const file = await getFileById(id);
+      if (!file) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "File not found",
+        });
+      }
+
+      if (file.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Access denied",
+        });
+      }
+
+      await softDeleteFile(id);
+
+      return res.status(204).send();
     } catch (error) {
       return res.status(500).json({
         status: "error",
