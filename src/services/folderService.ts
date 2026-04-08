@@ -32,6 +32,20 @@ export async function getFolderById(
   return folder ?? null;
 }
 
+/** List top-level soft-deleted folders for a user (parent is NULL or non-deleted). */
+export async function listDeletedFolders(userId: string): Promise<IFolder[]> {
+  const db = getDb();
+  return db(FOLDERS)
+    .where({ user_id: userId, is_deleted: true })
+    .andWhere(function () {
+      this.whereNull("parent_folder_id").orWhereIn(
+        "parent_folder_id",
+        db(FOLDERS).select("id").where({ is_deleted: false })
+      );
+    })
+    .orderBy("deleted_at", "desc");
+}
+
 /** Fetch a single soft-deleted folder by its id. */
 export async function getDeletedFolderById(
   folderId: string

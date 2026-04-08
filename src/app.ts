@@ -9,6 +9,7 @@ import healthRouter from "./routers/healthRouter";
 import usersRouter from "./routers/usersRouter";
 import foldersRouter from "./routers/foldersRouter";
 import filesRouter from "./routers/filesRouter";
+import recycleBinRouter from "./routers/recycleBinRouter";
 
 const app: Express = express();
 
@@ -26,6 +27,7 @@ app.use("/api/health", healthRouter);
 app.use("/api/users", usersRouter);
 app.use("/api/folders", foldersRouter);
 app.use("/api/files", filesRouter);
+app.use("/api/recycle-bin", recycleBinRouter);
 
 app.use(function errorHandler(
   err: Error,
