@@ -96,8 +96,8 @@ filesRouter
       const user = req.user as IUser;
       const fileId = req.params.id;
 
-      const file = await getFileById(fileId);
-      if (!file) {
+      const hasAccess = await canAccessFile(user.id, fileId);
+      if (!hasAccess) {
         return res.status(404).json({
           status: "error",
           error: true,
@@ -105,14 +105,7 @@ filesRouter
         });
       }
 
-      const hasAccess = await canAccessFile(user.id, fileId);
-      if (!hasAccess) {
-        return res.status(403).json({
-          status: "error",
-          error: true,
-          errorMsg: "Forbidden",
-        });
-      }
+      const file = (await getFileById(fileId))!;
 
       const secrets = req.app.get("secrets") as IAppSecrets;
       const expiresIn = 60; // 60 seconds
@@ -158,8 +151,8 @@ filesRouter
       const user = req.user as IUser;
       const fileId = req.params.id;
 
-      const file = await getFileById(fileId);
-      if (!file) {
+      const hasAccess = await canAccessFile(user.id, fileId);
+      if (!hasAccess) {
         return res.status(404).json({
           status: "error",
           error: true,
@@ -167,14 +160,7 @@ filesRouter
         });
       }
 
-      const hasAccess = await canAccessFile(user.id, fileId);
-      if (!hasAccess) {
-        return res.status(403).json({
-          status: "error",
-          error: true,
-          errorMsg: "Forbidden",
-        });
-      }
+      const file = (await getFileById(fileId))!;
 
       const secrets = req.app.get("secrets") as IAppSecrets;
       const expiresIn = secrets.PREVIEW_URL_TTL ?? 900; // default 15 minutes
