@@ -1,7 +1,7 @@
 import express, { Request, Response } from "express";
 import { IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
-import { createFolder, getFolderById, listFolderContents, listRootFolders, renameFolder } from "../services/folderService";
+import { createFolder, getFolderById, listFolderContents, listRootFolders, renameFolder, softDeleteFolder } from "../services/folderService";
 import { canAccessFolder } from "../utils/accessControl";
 
 const foldersRouter = express.Router();
@@ -181,6 +181,41 @@ foldersRouter
         error: false,
         data: updatedFolder,
       });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  })
+  .delete(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { id } = req.params;
+
+      const folder = await getFolderById(id);
+
+      if (!folder) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "Folder not found",
+        });
+      }
+
+      // Only the owner can delete
+      if (folder.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Access denied",
+        });
+      }
+
+      await softDeleteFolder(id);
+
+      return res.status(204).send();
     } catch (error) {
       return res.status(500).json({
         status: "error",
