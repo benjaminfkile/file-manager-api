@@ -2,6 +2,8 @@ import express, { Request, Response } from "express";
 import { IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
 import { createFolder, collectFolderFiles, getDeletedFolderById, getFolderById, hardDeleteFolder, listFolderContents, listRootFolders, renameFolder, restoreFolder, softDeleteFolder } from "../services/folderService";
+import { shareFolder } from "../services/sharingService";
+import { getDb } from "../db/db";
 import { deleteObjects, getObjectStream } from "../aws/s3Service";
 import { canAccessFolder } from "../utils/accessControl";
 import archiver from "archiver";
@@ -392,6 +394,81 @@ foldersRouter
       await hardDeleteFolder(id, deleteObjects);
 
       return res.status(204).send();
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  });
+
+foldersRouter
+  .route("/:id/share")
+  .post(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const folderId = req.params.id;
+      const { username } = req.body;
+
+      if (!username || typeof username !== "string" || username.trim().length === 0) {
+        return res.status(400).json({
+          status: "error",
+          error: true,
+          errorMsg: "username is required and must be a non-empty string",
+        });
+      }
+
+      const folder = await getFolderById(folderId);
+      if (!folder) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "Folder not found",
+        });
+      }
+
+      if (folder.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Only the folder owner can share this folder",
+        });
+      }
+
+      // Look up target user
+      const db = getDb();
+      const targetUser = await db("users").where({ username: username.trim() }).first();
+      if (!targetUser) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: `User "${username.trim()}" not found`,
+        });
+      }
+
+      // Check if share already exists
+      const existingShare = await db("folder_shares")
+        .where({ folder_id: folderId, shared_with_user_id: targetUser.id })
+        .first();
+      if (existingShare) {
+        return res.status(409).json({
+          status: "error",
+          error: true,
+          errorMsg: "Folder is already shared with this user",
+        });
+      }
+
+      await shareFolder(folderId, user.id, username.trim());
+
+      return res.status(201).json({
+        sharedWith: {
+          id: targetUser.id,
+          username: targetUser.username,
+          first_name: targetUser.first_name,
+          last_name: targetUser.last_name,
+        },
+      });
     } catch (error) {
       return res.status(500).json({
         status: "error",
