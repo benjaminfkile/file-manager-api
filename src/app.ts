@@ -8,6 +8,7 @@ import express, { Express, NextFunction, Request, Response } from "express";
 import healthRouter from "./routers/healthRouter";
 import usersRouter from "./routers/usersRouter";
 import foldersRouter from "./routers/foldersRouter";
+import filesRouter from "./routers/filesRouter";
 
 const app: Express = express();
 
@@ -24,6 +25,7 @@ app.get("/", (req: Request, res: Response) => {
 app.use("/api/health", healthRouter);
 app.use("/api/users", usersRouter);
 app.use("/api/folders", foldersRouter);
+app.use("/api/files", filesRouter);
 
 app.use(function errorHandler(
   err: Error,
