@@ -3,7 +3,7 @@ import multer, { memoryStorage } from "multer";
 import { v4 as uuidv4 } from "uuid";
 import { IAppSecrets, IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
-import { createFileRecord, getFileById } from "../services/fileService";
+import { createFileRecord, getFileById, renameFile } from "../services/fileService";
 import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl } from "../aws/s3Service";
 import { canAccessFile } from "../utils/accessControl";
 
@@ -197,6 +197,79 @@ filesRouter
       const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
 
       return res.status(200).json({ url, mimeType: file.mime_type, expiresAt });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  });
+
+/**
+ * PATCH /api/files/:id
+ * Rename a file. Only the owner can rename.
+ * Body: { name: string }
+ * Preserves the original file extension if omitted in the new name.
+ */
+filesRouter
+  .route("/:id")
+  .patch(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { id } = req.params;
+      const { name } = req.body;
+
+      if (!name || typeof name !== "string" || name.trim().length === 0) {
+        return res.status(400).json({
+          status: "error",
+          error: true,
+          errorMsg: "File name is required and must be a non-empty string",
+        });
+      }
+
+      if (/[\/\\]/.test(name) || name === "." || name === "..") {
+        return res.status(400).json({
+          status: "error",
+          error: true,
+          errorMsg: "File name must not contain path traversal characters (/, \\, ., ..)",
+        });
+      }
+
+      const file = await getFileById(id);
+      if (!file) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "File not found",
+        });
+      }
+
+      if (file.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Access denied",
+        });
+      }
+
+      // Preserve original extension if the new name doesn't include one
+      let finalName = name.trim();
+      const originalExt = file.name.includes(".")
+        ? file.name.slice(file.name.lastIndexOf("."))
+        : "";
+      const newHasExt = finalName.includes(".");
+      if (!newHasExt && originalExt) {
+        finalName = finalName + originalExt;
+      }
+
+      const updatedFile = await renameFile(id, finalName);
+
+      return res.status(200).json({
+        status: "ok",
+        error: false,
+        data: updatedFile,
+      });
     } catch (error) {
       return res.status(500).json({
         status: "error",
