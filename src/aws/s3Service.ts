@@ -7,6 +7,7 @@ import {
   HeadObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { getSignedUrl as getCloudFrontSignedUrl } from "@aws-sdk/cloudfront-signer";
 import { Readable } from "stream";
 
 /**
@@ -128,4 +129,22 @@ export async function headObject(
     contentLength: response.ContentLength ?? 0,
     contentType: response.ContentType ?? "application/octet-stream",
   };
+}
+
+export function generateSignedCloudFrontUrl(
+  domain: string,
+  key: string,
+  keyPairId: string,
+  privateKey: string,
+  expiresInSeconds: number
+): string {
+  const url = `https://${domain}/${key}`;
+  const dateLessThan = new Date(Date.now() + expiresInSeconds * 1000).toISOString();
+
+  return getCloudFrontSignedUrl({
+    url,
+    keyPairId,
+    privateKey,
+    dateLessThan,
+  });
 }

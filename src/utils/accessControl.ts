@@ -25,3 +25,37 @@ export async function canAccessFolder(
 
   return !!share;
 }
+
+/**
+ * Returns true if the user owns the file, has a file_shares record,
+ * or has access to the file's parent folder via folder_shares.
+ */
+export async function canAccessFile(
+  userId: string,
+  fileId: string
+): Promise<boolean> {
+  const db = getDb();
+
+  const file = await db("files")
+    .where({ id: fileId, is_deleted: false })
+    .first();
+
+  if (!file) return false;
+
+  // Owner check
+  if (file.user_id === userId) return true;
+
+  // Direct file share check
+  const fileShare = await db("file_shares")
+    .where({ file_id: fileId, shared_with_user_id: userId })
+    .first();
+
+  if (fileShare) return true;
+
+  // Shared parent folder check
+  if (file.folder_id) {
+    return canAccessFolder(userId, file.folder_id);
+  }
+
+  return false;
+}
