@@ -1,7 +1,7 @@
 import express, { Request, Response } from "express";
 import { IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
-import { createFolder, getFolderById, listFolderContents, listRootFolders } from "../services/folderService";
+import { createFolder, getFolderById, listFolderContents, listRootFolders, renameFolder } from "../services/folderService";
 import { canAccessFolder } from "../utils/accessControl";
 
 const foldersRouter = express.Router();
@@ -122,6 +122,65 @@ foldersRouter
       const { subFolders, files } = await listFolderContents(id);
 
       return res.status(200).json({ folder, subFolders, files });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  })
+  .patch(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { id } = req.params;
+      const { name } = req.body;
+
+      // Validate name is present and non-empty
+      if (!name || typeof name !== "string" || name.trim().length === 0) {
+        return res.status(400).json({
+          status: "error",
+          error: true,
+          errorMsg: "Folder name is required and must be a non-empty string",
+        });
+      }
+
+      // Validate no path traversal characters
+      if (/[\/\\]/.test(name) || name === "." || name === "..") {
+        return res.status(400).json({
+          status: "error",
+          error: true,
+          errorMsg:
+            "Folder name must not contain path traversal characters (/, \\, ., ..)",
+        });
+      }
+
+      const folder = await getFolderById(id);
+
+      if (!folder) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "Folder not found",
+        });
+      }
+
+      // Only the owner can rename
+      if (folder.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Access denied",
+        });
+      }
+
+      const updatedFolder = await renameFolder(id, name.trim());
+
+      return res.status(200).json({
+        status: "ok",
+        error: false,
+        data: updatedFolder,
+      });
     } catch (error) {
       return res.status(500).json({
         status: "error",
