@@ -7,6 +7,8 @@ import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDele
 import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject } from "../aws/s3Service";
 import { canAccessFile } from "../utils/accessControl";
 import { getDeletedFolderById } from "../services/folderService";
+import { shareFile } from "../services/sharingService";
+import { getDb } from "../db/db";
 
 const filesRouter = express.Router();
 
@@ -411,6 +413,87 @@ filesRouter
       await hardDeleteFile(id, deleteObject);
 
       return res.status(204).send();
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  });
+
+/**
+ * POST /api/files/:id/share
+ * Share a file with another user. Only the file owner can share.
+ * Body: { username: string }
+ * Returns 201 with { sharedWith: { id, username, first_name, last_name } }
+ */
+filesRouter
+  .route("/:id/share")
+  .post(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const fileId = req.params.id;
+      const { username } = req.body;
+
+      if (!username || typeof username !== "string" || username.trim().length === 0) {
+        return res.status(400).json({
+          status: "error",
+          error: true,
+          errorMsg: "username is required and must be a non-empty string",
+        });
+      }
+
+      const file = await getFileById(fileId);
+      if (!file) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "File not found",
+        });
+      }
+
+      if (file.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Only the file owner can share this file",
+        });
+      }
+
+      // Look up target user
+      const db = getDb();
+      const targetUser = await db("users").where({ username: username.trim() }).first();
+      if (!targetUser) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: `User "${username.trim()}" not found`,
+        });
+      }
+
+      // Check if share already exists
+      const existingShare = await db("file_shares")
+        .where({ file_id: fileId, shared_with_user_id: targetUser.id })
+        .first();
+      if (existingShare) {
+        return res.status(409).json({
+          status: "error",
+          error: true,
+          errorMsg: "File is already shared with this user",
+        });
+      }
+
+      await shareFile(fileId, user.id, username.trim());
+
+      return res.status(201).json({
+        sharedWith: {
+          id: targetUser.id,
+          username: targetUser.username,
+          first_name: targetUser.first_name,
+          last_name: targetUser.last_name,
+        },
+      });
     } catch (error) {
       return res.status(500).json({
         status: "error",
