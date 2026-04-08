@@ -3,9 +3,10 @@ import multer, { memoryStorage } from "multer";
 import { v4 as uuidv4 } from "uuid";
 import { IAppSecrets, IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
-import { createFileRecord, getFileById, renameFile, softDeleteFile } from "../services/fileService";
+import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDeleteFile, restoreFile } from "../services/fileService";
 import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl } from "../aws/s3Service";
 import { canAccessFile } from "../utils/accessControl";
+import { getDeletedFolderById } from "../services/folderService";
 
 const filesRouter = express.Router();
 
@@ -309,6 +310,65 @@ filesRouter
       await softDeleteFile(id);
 
       return res.status(204).send();
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  });
+
+/**
+ * POST /api/files/:id/restore
+ * Restore a soft-deleted file from the recycle bin.
+ * Only the owner can restore. If the parent folder is also soft-deleted, returns 409.
+ * Returns 200 with the restored IFile.
+ */
+filesRouter
+  .route("/:id/restore")
+  .post(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { id } = req.params;
+
+      const file = await getDeletedFileById(id);
+      if (!file) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "File not found",
+        });
+      }
+
+      if (file.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Access denied",
+        });
+      }
+
+      if (file.folder_id) {
+        const parentFolder = await getDeletedFolderById(file.folder_id);
+        if (parentFolder) {
+          return res.status(409).json({
+            status: "error",
+            error: true,
+            errorMsg: "The parent folder is also in the recycle bin. Restore the parent folder first.",
+          });
+        }
+      }
+
+      await restoreFile(id);
+
+      const restoredFile = await getFileById(id);
+
+      return res.status(200).json({
+        status: "ok",
+        error: false,
+        data: restoredFile,
+      });
     } catch (error) {
       return res.status(500).json({
         status: "error",
