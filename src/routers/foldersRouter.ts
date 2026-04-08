@@ -1,7 +1,8 @@
 import express, { Request, Response } from "express";
 import { IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
-import { createFolder, getFolderById, listRootFolders } from "../services/folderService";
+import { createFolder, getFolderById, listFolderContents, listRootFolders } from "../services/folderService";
+import { canAccessFolder } from "../utils/accessControl";
 
 const foldersRouter = express.Router();
 
@@ -79,6 +80,50 @@ foldersRouter
       });
     } catch (error) {
       res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  });
+
+/**
+ * GET /api/folders/:id
+ * Returns folder details and its direct children (sub-folders and files).
+ * User must own the folder or have a folder_shares record.
+ */
+foldersRouter
+  .route("/:id")
+  .get(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { id } = req.params;
+
+      const folder = await getFolderById(id);
+
+      if (!folder) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "Folder not found",
+        });
+      }
+
+      const hasAccess = await canAccessFolder(user.id, id);
+
+      if (!hasAccess) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Access denied",
+        });
+      }
+
+      const { subFolders, files } = await listFolderContents(id);
+
+      return res.status(200).json({ folder, subFolders, files });
+    } catch (error) {
+      return res.status(500).json({
         status: "error",
         error: true,
         errorMsg: (error as Error).message,
