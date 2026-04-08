@@ -149,6 +149,65 @@ export async function restoreFolder(folderId: string): Promise<void> {
 }
 
 /**
+ * Collect all non-deleted files in a folder tree with their relative zip paths.
+ * Returns an array of { s3_key, zipPath } where zipPath preserves directory structure.
+ */
+export async function collectFolderFiles(
+  rootId: string
+): Promise<{ s3_key: string; zipPath: string }[]> {
+  const db = getDb();
+
+  // Get all descendant folder ids (non-deleted only)
+  const folderRows = await db.raw<{
+    rows: { id: string; name: string; parent_folder_id: string | null }[];
+  }>(
+    `WITH RECURSIVE tree AS (
+       SELECT id, name, parent_folder_id FROM folders WHERE id = ? AND is_deleted = false
+       UNION ALL
+       SELECT f.id, f.name, f.parent_folder_id FROM folders f INNER JOIN tree t ON f.parent_folder_id = t.id WHERE f.is_deleted = false
+     )
+     SELECT id, name, parent_folder_id FROM tree`,
+    [rootId]
+  );
+
+  const folders = folderRows.rows;
+  if (folders.length === 0) return [];
+
+  // Build a map of folder id -> folder for path resolution
+  const folderMap = new Map(folders.map((f) => [f.id, f]));
+
+  // Build relative path for each folder
+  const pathCache = new Map<string, string>();
+  function getFolderPath(folderId: string): string {
+    if (pathCache.has(folderId)) return pathCache.get(folderId)!;
+    const folder = folderMap.get(folderId);
+    if (!folder) return "";
+    if (folder.id === rootId) {
+      pathCache.set(folderId, "");
+      return "";
+    }
+    const parentPath = getFolderPath(folder.parent_folder_id!);
+    const path = parentPath ? `${parentPath}/${folder.name}` : folder.name;
+    pathCache.set(folderId, path);
+    return path;
+  }
+
+  const folderIds = folders.map((f) => f.id);
+
+  // Get all non-deleted files in these folders
+  const files: Pick<IFile, "s3_key" | "name" | "folder_id">[] = await db(FILES)
+    .whereIn("folder_id", folderIds)
+    .where({ is_deleted: false })
+    .select("s3_key", "name", "folder_id");
+
+  return files.map((f) => {
+    const folderPath = getFolderPath(f.folder_id!);
+    const zipPath = folderPath ? `${folderPath}/${f.name}` : f.name;
+    return { s3_key: f.s3_key, zipPath };
+  });
+}
+
+/**
  * Permanently delete a folder tree from the database and S3.
  * `s3DeleteFn` receives an array of S3 keys to remove.
  */
