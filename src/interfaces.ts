@@ -5,7 +5,11 @@ export interface IAppSecrets {
   DB_NAME: string;
   DB_HOST: string;
   DB_PROXY_URL: string;
-  // Add additional app-level secrets here as needed
+  S3_BUCKET_NAME: string;
+  CLOUDFRONT_DOMAIN?: string;
+  CLOUDFRONT_KEY_PAIR_ID?: string;
+  CLOUDFRONT_PRIVATE_KEY?: string;
+  MAX_UPLOAD_BYTES: number;
 }
 
 // ---- User record from the users table ----
