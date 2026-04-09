@@ -3,8 +3,8 @@ import express, { Express, NextFunction, Request, Response } from "express";
 // behind bk-gateway-api (https://github.com/benjaminfkile/bk-gateway-api), which
 // already applies helmet security headers and CORS for all proxied requests.
 // If you ever deploy this API directly without the gateway, uncomment these.
-//import cors from "cors";
-//import helmet from "helmet";
+import cors from "cors";
+import helmet from "helmet";
 import healthRouter from "./routers/healthRouter";
 import usersRouter from "./routers/usersRouter";
 import foldersRouter from "./routers/foldersRouter";
@@ -14,8 +14,8 @@ import sharedRouter from "./routers/sharedRouter";
 
 const app: Express = express();
 
-// app.use(helmet());
-// app.use(cors());
+app.use(helmet());
+app.use(cors());
 app.use(express.json());
 
 app.get("/", (req: Request, res: Response) => {

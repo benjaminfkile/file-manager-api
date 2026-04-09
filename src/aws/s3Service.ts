@@ -7,7 +7,7 @@ import {
   HeadObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { getSignedUrl as getCloudFrontSignedUrl } from "@aws-sdk/cloudfront-signer";
+import { createPrivateKey, createSign } from "crypto";
 import { Readable } from "stream";
 
 /**
@@ -138,13 +138,55 @@ export function generateSignedCloudFrontUrl(
   privateKey: string,
   expiresInSeconds: number
 ): string {
-  const url = `https://${domain}/${key}`;
-  const dateLessThan = new Date(Date.now() + expiresInSeconds * 1000).toISOString();
+  // URL-encode the S3 key path segments so the policy URL matches browser requests
+  const encodedKey = key.split("/").map(encodeURIComponent).join("/");
+  const url = `https://${domain}/${encodedKey}`;
 
-  return getCloudFrontSignedUrl({
-    url,
-    keyPairId,
-    privateKey,
-    dateLessThan,
+  // Coerce to number (secrets come back as strings) and clamp to 24h max
+  const ttlSeconds = Math.min(Number(expiresInSeconds), 86400);
+  const expiresEpoch = Math.floor(Date.now() / 1000) + ttlSeconds;
+
+  console.log(`[CF Debug] ttl=${ttlSeconds} expires=${expiresEpoch} url=${url}`);
+
+  // Canned policy document (what CloudFront expects to be signed)
+  const policy = JSON.stringify({
+    Statement: [
+      {
+        Resource: url,
+        Condition: { DateLessThan: { "AWS:EpochTime": expiresEpoch } },
+      },
+    ],
   });
+
+  // Normalize literal \n sequences from Secrets Manager JSON storage
+  let normalized = privateKey.replace(/\\n/g, "\n");
+
+  // If the key still has no newlines (stored with spaces instead of \n),
+  // reconstruct proper PEM by stripping all whitespace from the body and re-chunking
+  if (!normalized.includes("\n")) {
+    const headerMatch = normalized.match(/-----BEGIN ([^-]+)-----/);
+    const footerMatch = normalized.match(/-----END ([^-]+)-----/);
+    if (headerMatch && footerMatch) {
+      const header = `-----BEGIN ${headerMatch[1]}-----`;
+      const footer = `-----END ${footerMatch[1]}-----`;
+      const body = normalized
+        .replace(/-----BEGIN [^-]+-----/, "")
+        .replace(/-----END [^-]+-----/, "")
+        .replace(/\s+/g, ""); // strip all whitespace/spaces
+      const chunked = body.match(/.{1,64}/g)?.join("\n") ?? body;
+      normalized = `${header}\n${chunked}\n${footer}`;
+    }
+  }
+
+  // Parse as a KeyObject — works with both PKCS#1 and PKCS#8 in Node 24 / OpenSSL 3
+  const keyObject = createPrivateKey(normalized);
+
+  const signature = createSign("RSA-SHA1")
+    .update(policy)
+    .sign(keyObject, "base64")
+    .replace(/\+/g, "-")
+    .replace(/=/g, "_")
+    .replace(/\//g, "~");
+
+  return `${url}?Expires=${expiresEpoch}&Signature=${signature}&Key-Pair-Id=${keyPairId}`;
 }

@@ -6,6 +6,7 @@ import app from "./src/app";
 import { getAppSecrets } from "./src/aws/getAppSecrets";
 import { getDBSecrets } from "./src/aws/getDBSecrets";
 import { initDb } from "./src/db/db";
+import { initS3 } from "./src/aws/s3Service";
 import morgan from "morgan";
 
 process.on("uncaughtException", (err) => {
@@ -18,7 +19,11 @@ async function start() {
     const appSecrets = await getAppSecrets();
     const dbSecrets = await getDBSecrets();
 
+    console.log("App secrets", appSecrets)
+
     app.set("secrets", appSecrets);
+
+    initS3(appSecrets.S3_BUCKET_NAME);
 
     const morganFormat =
       appSecrets.NODE_ENV === "production" ? "tiny" : "common";

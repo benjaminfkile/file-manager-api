@@ -4,7 +4,7 @@ import { randomUUID } from "crypto";
 import { IAppSecrets, IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
 import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDeleteFile, restoreFile, hardDeleteFile } from "../services/fileService";
-import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject } from "../aws/s3Service";
+import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject, getObjectStream, headObject } from "../aws/s3Service";
 import { canAccessFile } from "../utils/accessControl";
 import { getDeletedFolderById } from "../services/folderService";
 import { shareFile, unshareFile, getFileSharesWithUsers } from "../services/sharingService";
@@ -21,11 +21,12 @@ filesRouter
   .route("/upload")
   .post(protectedRoute(), (req: Request, res: Response, next) => {
     const secrets = req.app.get("secrets") as IAppSecrets;
-    const maxBytes = secrets.MAX_UPLOAD_BYTES;
+    const maxBytes = Number(secrets.MAX_UPLOAD_BYTES);
+    const unlimited = maxBytes < 1;
 
     const upload = multer({
       storage: memoryStorage(),
-      limits: { fileSize: maxBytes },
+      ...(unlimited ? {} : { limits: { fileSize: maxBytes } }),
     }).single("file");
 
     upload(req, res, (err) => {
@@ -86,8 +87,8 @@ filesRouter
 
 /**
  * GET /api/files/:id/download
- * Generate a short-lived signed URL for downloading a file.
- * Uses CloudFront if configured, otherwise falls back to S3 presigned URL.
+ * Stream the file from S3 directly to the client with Content-Disposition: attachment
+ * so the browser always saves it rather than displaying it inline.
  */
 filesRouter
   .route("/:id/download")
@@ -107,34 +108,29 @@ filesRouter
 
       const file = (await getFileById(fileId))!;
 
-      const secrets = req.app.get("secrets") as IAppSecrets;
-      const expiresIn = 60; // 60 seconds
+      const { contentLength, contentType } = await headObject(file.s3_key);
+      const stream = await getObjectStream(file.s3_key);
 
-      let url: string;
+      // RFC 5987 encoded filename so non-ASCII names survive the header
+      const encodedName = encodeURIComponent(file.name).replace(/'/g, "%27");
+      const safeName = file.name.replace(/"/g, '\\"');
 
-      if (
-        secrets.CLOUDFRONT_DOMAIN &&
-        secrets.CLOUDFRONT_KEY_PAIR_ID &&
-        secrets.CLOUDFRONT_PRIVATE_KEY
-      ) {
-        url = generateSignedCloudFrontUrl(
-          secrets.CLOUDFRONT_DOMAIN,
-          file.s3_key,
-          secrets.CLOUDFRONT_KEY_PAIR_ID,
-          secrets.CLOUDFRONT_PRIVATE_KEY,
-          expiresIn
-        );
-      } else {
-        url = await generatePresignedDownloadUrl(file.s3_key, expiresIn);
-      }
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Content-Length", contentLength);
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${safeName}"; filename*=UTF-8''${encodedName}`
+      );
 
-      return res.status(200).json({ url });
+      stream.pipe(res);
     } catch (error) {
-      return res.status(500).json({
-        status: "error",
-        error: true,
-        errorMsg: (error as Error).message,
-      });
+      if (!res.headersSent) {
+        return res.status(500).json({
+          status: "error",
+          error: true,
+          errorMsg: (error as Error).message,
+        });
+      }
     }
   });
 
@@ -163,7 +159,7 @@ filesRouter
       const file = (await getFileById(fileId))!;
 
       const secrets = req.app.get("secrets") as IAppSecrets;
-      const expiresIn = secrets.PREVIEW_URL_TTL ?? 900; // default 15 minutes
+      const expiresIn = Number(secrets.PREVIEW_URL_TTL ?? 900); // default 15 minutes
 
       let url: string;
 
