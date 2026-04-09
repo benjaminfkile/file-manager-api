@@ -11,6 +11,9 @@ export interface IAppSecrets {
   CLOUDFRONT_PRIVATE_KEY?: string;
   MAX_UPLOAD_BYTES: string;
   PREVIEW_URL_TTL?: string;
+  COGNITO_USER_POOL_ID: string;
+  COGNITO_CLIENT_ID: string;
+  COGNITO_REGION: string;
 }
 
 // ---- User record from the users table ----
