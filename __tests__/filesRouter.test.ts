@@ -158,6 +158,8 @@ import {
   generatePresignedDownloadUrl,
   generateSignedCloudFrontUrl,
   deleteObject,
+  headObject,
+  getObjectStream,
 } from "../src/aws/s3Service";
 import { shareFile, unshareFile, getFileSharesWithUsers } from "../src/services/sharingService";
 import { getDb } from "../src/db/db";
@@ -284,20 +286,27 @@ describe("POST /api/files/upload", () => {
 /* ================================================================== */
 
 describe("GET /api/files/:id/download", () => {
-  it("returns 200 with presigned S3 URL when CloudFront is not configured", async () => {
+  it("returns 200 and streams file with correct headers", async () => {
+    const { Readable } = require("stream");
+    const contentBuffer = Buffer.from("file content");
     (canAccessFile as jest.Mock).mockResolvedValue(true);
     (getFileById as jest.Mock).mockResolvedValue(fakeFile);
-    (generatePresignedDownloadUrl as jest.Mock).mockResolvedValue(
-      "https://s3.amazonaws.com/bucket/files/report.pdf?signed"
+    (headObject as jest.Mock).mockResolvedValue({
+      contentLength: contentBuffer.length,
+      contentType: fakeFile.mime_type,
+    });
+    (getObjectStream as jest.Mock).mockResolvedValue(
+      Readable.from([contentBuffer])
     );
 
     const res = await request(app).get(`/api/files/${fakeFile.id}/download`);
 
     expect(res.status).toBe(200);
-    expect(res.body.url).toBe(
-      "https://s3.amazonaws.com/bucket/files/report.pdf?signed"
-    );
-    expect(generatePresignedDownloadUrl).toHaveBeenCalledWith(fakeFile.s3_key, 60);
+    expect(res.headers["content-type"]).toMatch(/application\/pdf/);
+    expect(res.headers["content-disposition"]).toMatch(/attachment/);
+    expect(res.headers["content-disposition"]).toMatch(/report\.pdf/);
+    expect(headObject).toHaveBeenCalledWith(fakeFile.s3_key);
+    expect(getObjectStream).toHaveBeenCalledWith(fakeFile.s3_key);
   });
 
   it("returns 404 when user has no access to file", async () => {
@@ -309,17 +318,15 @@ describe("GET /api/files/:id/download", () => {
     expect(res.body.errorMsg).toBe("File not found");
   });
 
-  it("returns 500 when presigned URL generation fails", async () => {
+  it("returns 500 when headObject throws", async () => {
     (canAccessFile as jest.Mock).mockResolvedValue(true);
     (getFileById as jest.Mock).mockResolvedValue(fakeFile);
-    (generatePresignedDownloadUrl as jest.Mock).mockRejectedValue(
-      new Error("presign error")
-    );
+    (headObject as jest.Mock).mockRejectedValue(new Error("S3 head error"));
 
     const res = await request(app).get(`/api/files/${fakeFile.id}/download`);
 
     expect(res.status).toBe(500);
-    expect(res.body.errorMsg).toBe("presign error");
+    expect(res.body.errorMsg).toBe("S3 head error");
   });
 });
 

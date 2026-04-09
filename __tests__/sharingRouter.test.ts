@@ -763,15 +763,23 @@ describe("GET /api/shared", () => {
 
 describe("Shared user can access file via download endpoint", () => {
   it("allows access when canAccessFile returns true (shared user)", async () => {
+    const { Readable } = require("stream");
+    const contentBuffer = Buffer.from("file content");
     (canAccessFile as jest.Mock).mockResolvedValue(true);
     (getFileById as jest.Mock).mockResolvedValue(otherUserFile);
-    const { generatePresignedDownloadUrl } = require("../src/aws/s3Service");
-    (generatePresignedDownloadUrl as jest.Mock).mockResolvedValue("https://s3.example.com/signed-url");
+    const { headObject, getObjectStream } = require("../src/aws/s3Service");
+    (headObject as jest.Mock).mockResolvedValue({
+      contentLength: contentBuffer.length,
+      contentType: otherUserFile.mime_type,
+    });
+    (getObjectStream as jest.Mock).mockResolvedValue(
+      Readable.from([contentBuffer])
+    );
 
     const res = await request(app).get(`/api/files/${otherUserFile.id}/download`);
 
     expect(res.status).toBe(200);
-    expect(res.body.url).toBe("https://s3.example.com/signed-url");
+    expect(res.headers["content-disposition"]).toMatch(/attachment/);
   });
 
   it("denies access when canAccessFile returns false (no share)", async () => {
