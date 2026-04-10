@@ -24,6 +24,7 @@ export interface IUser {
   username: string;
   api_key_hash: string;
   api_key_prefix: string;
+  cognito_sub: string | null;
   created_at: string;
   updated_at: string;
 }
