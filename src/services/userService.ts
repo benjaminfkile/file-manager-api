@@ -9,8 +9,8 @@ export async function createUser(
   firstName: string,
   lastName: string,
   username: string,
-  apiKey: string
-): Promise<Omit<IUser, "api_key_hash" | "api_key_prefix" | "updated_at">> {
+  cognitoSub: string,
+): Promise<Omit<IUser, "api_key_hash" | "api_key_prefix" | "cognito_sub" | "updated_at">> {
   const db = getDb();
 
   const existing = await db<IUser>(USERS).where("username", username).first();
@@ -18,16 +18,12 @@ export async function createUser(
     throw new Error("Username is already taken");
   }
 
-  const apiKeyHash = await bcrypt.hash(apiKey, 10);
-  const apiKeyPrefix = apiKey.slice(0, 8);
-
   const [user] = await db<IUser>(USERS)
     .insert({
       first_name: firstName,
       last_name: lastName,
       username,
-      api_key_hash: apiKeyHash,
-      api_key_prefix: apiKeyPrefix,
+      cognito_sub: cognitoSub,
     })
     .returning(["id", "first_name", "last_name", "username", "created_at"]);
 
@@ -73,4 +69,11 @@ export async function searchUsersByUsername(
   }
 
   return q;
+}
+
+/** Look up a user by their Cognito sub (subject) identifier. */
+export async function getUserByCognitoSub(sub: string): Promise<IUser | null> {
+  const db = getDb();
+  const user = await db<IUser>(USERS).where("cognito_sub", sub).first();
+  return user ?? null;
 }
