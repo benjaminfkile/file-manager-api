@@ -18,8 +18,7 @@ const testUser: IUser = {
   first_name: "Alice",
   last_name: "Anderson",
   username: "alice",
-  api_key_prefix: "AAAAAAAA",
-  api_key_hash: "$2b$10$fakehash",
+  cognito_sub: "cognito-sub-aaaa",
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-01T00:00:00.000Z",
 };
@@ -29,8 +28,7 @@ const otherUser: IUser = {
   first_name: "Bob",
   last_name: "Baker",
   username: "bob",
-  api_key_prefix: "BBBBBBBB",
-  api_key_hash: "$2b$10$fakehash",
+  cognito_sub: "cognito-sub-bbbb",
   created_at: "2026-01-02T00:00:00.000Z",
   updated_at: "2026-01-02T00:00:00.000Z",
 };
@@ -100,8 +98,7 @@ jest.mock("../src/middleware/protectedRoute", () => {
     first_name: "Alice",
     last_name: "Anderson",
     username: "alice",
-    api_key_prefix: "AAAAAAAA",
-    api_key_hash: "$2b$10$fakehash",
+    cognito_sub: "cognito-sub-aaaa",
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-01T00:00:00.000Z",
   };

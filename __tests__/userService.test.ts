@@ -1,4 +1,3 @@
-import bcrypt from "bcrypt";
 import { IUser } from "../src/interfaces";
 
 /* ------------------------------------------------------------------ */
@@ -21,15 +20,13 @@ jest.mock("../src/db/db", () => ({
   getDb: jest.fn(() => mockDb),
 }));
 
-jest.mock("bcrypt");
-
 /* ------------------------------------------------------------------ */
 /*  Import after mocks are in place                                   */
 /* ------------------------------------------------------------------ */
 
 import {
   createUser,
-  getUserByApiKey,
+  getUserByCognitoSub,
   getUserById,
   searchUsersByUsername,
 } from "../src/services/userService";
@@ -43,8 +40,7 @@ const fakeUser: IUser = {
   first_name: "Jane",
   last_name: "Doe",
   username: "janedoe",
-  api_key_hash: "$2b$10$hashedvalue",
-  api_key_prefix: "ak_test_",
+  cognito_sub: "cognito-sub-janedoe",
   created_at: "2026-04-08T00:00:00.000Z",
   updated_at: "2026-04-08T00:00:00.000Z",
 };
@@ -68,8 +64,6 @@ describe("createUser", () => {
     // No existing user with that username
     mockQueryBuilder.first.mockResolvedValueOnce(undefined);
 
-    (bcrypt.hash as jest.Mock).mockResolvedValueOnce("$2b$10$hashedvalue");
-
     const returned = {
       id: "uuid-1",
       first_name: "Jane",
@@ -79,23 +73,19 @@ describe("createUser", () => {
     };
     mockQueryBuilder.returning.mockResolvedValueOnce([returned]);
 
-    const result = await createUser("Jane", "Doe", "janedoe", "ak_test_secretkey123");
+    const result = await createUser("Jane", "Doe", "janedoe", "cognito-sub-janedoe");
 
     // Checked for duplicate
     expect(mockDb).toHaveBeenCalledWith("users");
     expect(mockQueryBuilder.where).toHaveBeenCalledWith("username", "janedoe");
     expect(mockQueryBuilder.first).toHaveBeenCalled();
 
-    // Hashed the key
-    expect(bcrypt.hash).toHaveBeenCalledWith("ak_test_secretkey123", 10);
-
     // Inserted with correct fields
     expect(mockQueryBuilder.insert).toHaveBeenCalledWith({
       first_name: "Jane",
       last_name: "Doe",
       username: "janedoe",
-      api_key_hash: "$2b$10$hashedvalue",
-      api_key_prefix: "ak_test_",
+      cognito_sub: "cognito-sub-janedoe",
     });
 
     expect(result).toEqual(returned);
@@ -105,7 +95,7 @@ describe("createUser", () => {
     mockQueryBuilder.first.mockResolvedValueOnce(fakeUser);
 
     await expect(
-      createUser("Jane", "Doe", "janedoe", "ak_test_secretkey123")
+      createUser("Jane", "Doe", "janedoe", "cognito-sub-janedoe")
     ).rejects.toThrow("Username is already taken");
 
     // Should NOT attempt to insert
@@ -114,35 +104,23 @@ describe("createUser", () => {
 });
 
 /* ================================================================== */
-/*  getUserByApiKey                                                    */
+/*  getUserByCognitoSub                                               */
 /* ================================================================== */
 
-describe("getUserByApiKey", () => {
-  it("returns the user when the key matches", async () => {
+describe("getUserByCognitoSub", () => {
+  it("returns the user when the cognito sub matches", async () => {
     mockQueryBuilder.first.mockResolvedValueOnce(fakeUser);
-    (bcrypt.compare as jest.Mock).mockResolvedValueOnce(true);
 
-    const result = await getUserByApiKey("ak_test_secretkey123");
+    const result = await getUserByCognitoSub("cognito-sub-janedoe");
 
-    expect(mockQueryBuilder.where).toHaveBeenCalledWith("api_key_prefix", "ak_test_");
-    expect(bcrypt.compare).toHaveBeenCalledWith("ak_test_secretkey123", fakeUser.api_key_hash);
+    expect(mockQueryBuilder.where).toHaveBeenCalledWith("cognito_sub", "cognito-sub-janedoe");
     expect(result).toEqual(fakeUser);
   });
 
-  it("returns null when no user has the prefix", async () => {
+  it("returns null when no user has the cognito sub", async () => {
     mockQueryBuilder.first.mockResolvedValueOnce(undefined);
 
-    const result = await getUserByApiKey("no_match_key");
-
-    expect(result).toBeNull();
-    expect(bcrypt.compare).not.toHaveBeenCalled();
-  });
-
-  it("returns null when the prefix matches but bcrypt compare fails", async () => {
-    mockQueryBuilder.first.mockResolvedValueOnce(fakeUser);
-    (bcrypt.compare as jest.Mock).mockResolvedValueOnce(false);
-
-    const result = await getUserByApiKey("ak_test_wrongkey999");
+    const result = await getUserByCognitoSub("cognito-sub-unknown");
 
     expect(result).toBeNull();
   });

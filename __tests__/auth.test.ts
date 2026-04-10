@@ -1,28 +1,33 @@
 import request from "supertest";
 import express from "express";
-import bcrypt from "bcrypt";
 import { IUser } from "../src/interfaces";
 
-const mockFirst = jest.fn();
-const mockWhere = jest.fn().mockReturnValue({ first: mockFirst });
-const mockDbQueryBuilder = jest.fn().mockReturnValue({ where: mockWhere });
+/* ------------------------------------------------------------------ */
+/*  Mocks                                                             */
+/* ------------------------------------------------------------------ */
 
-jest.mock("../src/db/db", () => ({
-  getDb: jest.fn().mockReturnValue(mockDbQueryBuilder),
+const mockVerifyCognitoToken = jest.fn();
+jest.mock("../src/aws/cognitoAuth", () => ({
+  verifyCognitoToken: mockVerifyCognitoToken,
+}));
+
+const mockGetUserByCognitoSub = jest.fn();
+jest.mock("../src/services/userService", () => ({
+  getUserByCognitoSub: mockGetUserByCognitoSub,
 }));
 
 import protectedRoute from "../src/middleware/protectedRoute";
 
-const RAW_KEY_A = "AAAAAAAA_secret_key_for_user_a";
-const RAW_KEY_B = "BBBBBBBB_secret_key_for_user_b";
+/* ------------------------------------------------------------------ */
+/*  Fake data                                                         */
+/* ------------------------------------------------------------------ */
 
 const userA: IUser = {
   id: "aaaa-aaaa-aaaa-aaaa",
   first_name: "Alice",
   last_name: "Anderson",
   username: "alice",
-  api_key_prefix: RAW_KEY_A.slice(0, 8),
-  api_key_hash: "",
+  cognito_sub: "cognito-sub-aaaa",
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-01T00:00:00.000Z",
 };
@@ -32,8 +37,7 @@ const userB: IUser = {
   first_name: "Bob",
   last_name: "Baker",
   username: "bob",
-  api_key_prefix: RAW_KEY_B.slice(0, 8),
-  api_key_hash: "",
+  cognito_sub: "cognito-sub-bbbb",
   created_at: "2026-01-02T00:00:00.000Z",
   updated_at: "2026-01-02T00:00:00.000Z",
 };
@@ -46,43 +50,57 @@ app.get("/protected", protectedRoute(), (req, res) => {
   res.status(200).json({ user });
 });
 
-beforeAll(async () => {
-  userA.api_key_hash = await bcrypt.hash(RAW_KEY_A, 10);
-  userB.api_key_hash = await bcrypt.hash(RAW_KEY_B, 10);
-});
-
 beforeEach(() => {
   jest.clearAllMocks();
-  mockDbQueryBuilder.mockReturnValue({ where: mockWhere });
-  mockWhere.mockReturnValue({ first: mockFirst });
-  mockFirst.mockResolvedValue(undefined);
 });
 
 describe("protectedRoute auth middleware", () => {
-  it("returns 401 when no x-api-key header is provided", async () => {
+  it("returns 401 when no Authorization header is provided", async () => {
     const res = await request(app).get("/protected");
 
     expect(res.status).toBe(401);
     expect(res.body).toEqual({ error: "Unauthorized" });
   });
 
-  it("returns 401 when an invalid key is provided", async () => {
-    mockFirst.mockResolvedValue(undefined);
-
+  it("returns 401 when Authorization header is not Bearer", async () => {
     const res = await request(app)
       .get("/protected")
-      .set("x-api-key", "INVALIDX_not_a_real_key");
+      .set("authorization", "Basic sometoken");
 
     expect(res.status).toBe(401);
     expect(res.body).toEqual({ error: "Unauthorized" });
   });
 
-  it("returns 200 and populates req.user with a valid key", async () => {
-    mockFirst.mockResolvedValue({ ...userA });
+  it("returns 401 when the token is invalid", async () => {
+    mockVerifyCognitoToken.mockRejectedValueOnce(new Error("Invalid token"));
 
     const res = await request(app)
       .get("/protected")
-      .set("x-api-key", RAW_KEY_A);
+      .set("authorization", "Bearer bad.token.here");
+
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: "Unauthorized" });
+  });
+
+  it("returns 401 when token is valid but no matching user is found", async () => {
+    mockVerifyCognitoToken.mockResolvedValueOnce({ sub: "cognito-sub-unknown" });
+    mockGetUserByCognitoSub.mockResolvedValueOnce(null);
+
+    const res = await request(app)
+      .get("/protected")
+      .set("authorization", "Bearer valid.token.here");
+
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: "Unauthorized" });
+  });
+
+  it("returns 200 and populates req.user with a valid token", async () => {
+    mockVerifyCognitoToken.mockResolvedValueOnce({ sub: userA.cognito_sub });
+    mockGetUserByCognitoSub.mockResolvedValueOnce({ ...userA });
+
+    const res = await request(app)
+      .get("/protected")
+      .set("authorization", "Bearer valid.token.for.alice");
 
     expect(res.status).toBe(200);
     expect(res.body.user).toMatchObject({
@@ -93,24 +111,26 @@ describe("protectedRoute auth middleware", () => {
     });
   });
 
-  it("authenticates two different users with different keys correctly", async () => {
+  it("authenticates two different users with different tokens correctly", async () => {
     // User A authenticates
-    mockFirst.mockResolvedValue({ ...userA });
+    mockVerifyCognitoToken.mockResolvedValueOnce({ sub: userA.cognito_sub });
+    mockGetUserByCognitoSub.mockResolvedValueOnce({ ...userA });
 
     const resA = await request(app)
       .get("/protected")
-      .set("x-api-key", RAW_KEY_A);
+      .set("authorization", "Bearer token.for.alice");
 
     expect(resA.status).toBe(200);
     expect(resA.body.user.username).toBe("alice");
     expect(resA.body.user.id).toBe(userA.id);
 
     // User B authenticates
-    mockFirst.mockResolvedValue({ ...userB });
+    mockVerifyCognitoToken.mockResolvedValueOnce({ sub: userB.cognito_sub });
+    mockGetUserByCognitoSub.mockResolvedValueOnce({ ...userB });
 
     const resB = await request(app)
       .get("/protected")
-      .set("x-api-key", RAW_KEY_B);
+      .set("authorization", "Bearer token.for.bob");
 
     expect(resB.status).toBe(200);
     expect(resB.body.user.username).toBe("bob");
