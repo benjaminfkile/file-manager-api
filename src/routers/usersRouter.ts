@@ -1,26 +1,28 @@
 import express, { Request, Response } from "express";
-import bcrypt from "bcrypt";
 import { getDb } from "../db/db";
 import { IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
+import verifyToken from "../middleware/verifyToken";
+import { createUser } from "../services/userService";
 
 const usersRouter = express.Router();
 
 /**
  * POST /api/users/register
- * Creates a new user account. Not behind protectedRoute — this is how users obtain access.
- * Body: { first_name, last_name, username, api_key }
+ * Creates a new user account. Uses verifyToken — the user has a Cognito JWT but no local record yet.
+ * Body: { first_name, last_name, username }
  */
-usersRouter.route("/register").post(async (req: Request, res: Response) => {
+usersRouter.route("/register").post(verifyToken(), async (req: Request, res: Response) => {
   try {
-    const { first_name, last_name, username, api_key } = req.body;
+    const { first_name, last_name, username } = req.body;
+    const cognitoSub = req.cognitoSub!;
 
     // Validate all fields present
-    if (!first_name || !last_name || !username || !api_key) {
+    if (!first_name || !last_name || !username) {
       return res.status(400).json({
         status: "error",
         error: true,
-        errorMsg: "All fields are required: first_name, last_name, username, api_key",
+        errorMsg: "All fields are required: first_name, last_name, username",
       });
     }
 
@@ -45,20 +47,7 @@ usersRouter.route("/register").post(async (req: Request, res: Response) => {
       });
     }
 
-    // Hash api_key with bcrypt and extract prefix
-    const api_key_hash = await bcrypt.hash(api_key, 10);
-    const api_key_prefix = api_key.slice(0, 8);
-
-    // Insert user and return the created record
-    const [user] = await db<IUser>("users")
-      .insert({
-        first_name,
-        last_name,
-        username,
-        api_key_hash,
-        api_key_prefix,
-      })
-      .returning(["id", "first_name", "last_name", "username", "created_at"]);
+    const user = await createUser(first_name, last_name, username, cognitoSub);
 
     return res.status(201).json({
       status: "ok",
