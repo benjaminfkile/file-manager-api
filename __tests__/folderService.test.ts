@@ -51,6 +51,7 @@ import {
   softDeleteFolder,
   restoreFolder,
   hardDeleteFolder,
+  moveFolder,
 } from "../src/services/folderService";
 
 /* ------------------------------------------------------------------ */
@@ -333,5 +334,82 @@ describe("hardDeleteFolder", () => {
       "uploads/a.pdf",
       "uploads/b.pdf",
     ]);
+  });
+});
+
+/* ================================================================== */
+/*  moveFolder                                                        */
+/* ================================================================== */
+
+describe("moveFolder", () => {
+  it("moves a folder to a new parent", async () => {
+    const movedFolder: IFolder = {
+      ...fakeFolder,
+      parent_folder_id: "target-id",
+    };
+
+    // collectDescendantIds returns only the folder itself (no descendants match target)
+    mockDb.raw.mockResolvedValueOnce({
+      rows: [{ id: "folder-1" }],
+    });
+
+    mockQueryBuilder.returning.mockResolvedValueOnce([movedFolder]);
+
+    const result = await moveFolder("folder-1", "target-id");
+
+    expect(mockDb.raw).toHaveBeenCalledWith(
+      expect.stringContaining("WITH RECURSIVE tree AS"),
+      ["folder-1"]
+    );
+    expect(mockDb).toHaveBeenCalledWith("folders");
+    expect(mockQueryBuilder.where).toHaveBeenCalledWith({ id: "folder-1" });
+    expect(mockQueryBuilder.update).toHaveBeenCalledWith({
+      parent_folder_id: "target-id",
+      updated_at: "NOW()",
+    });
+    expect(mockQueryBuilder.returning).toHaveBeenCalledWith("*");
+    expect(result).toEqual(movedFolder);
+  });
+
+  it("moves a folder to root (null parent), skipping cycle check", async () => {
+    const movedFolder: IFolder = {
+      ...fakeFolder,
+      parent_folder_id: null,
+    };
+
+    mockQueryBuilder.returning.mockResolvedValueOnce([movedFolder]);
+
+    const result = await moveFolder("folder-1", null);
+
+    // Cycle check should be skipped — no raw query
+    expect(mockDb.raw).not.toHaveBeenCalled();
+
+    expect(mockQueryBuilder.update).toHaveBeenCalledWith({
+      parent_folder_id: null,
+      updated_at: "NOW()",
+    });
+    expect(result).toEqual(movedFolder);
+  });
+
+  it("throws when moving a folder into itself", async () => {
+    // collectDescendantIds returns the folder itself
+    mockDb.raw.mockResolvedValueOnce({
+      rows: [{ id: "folder-1" }],
+    });
+
+    await expect(moveFolder("folder-1", "folder-1")).rejects.toThrow(
+      "Cannot move a folder into itself or one of its descendants"
+    );
+  });
+
+  it("throws when moving a folder into one of its descendants", async () => {
+    // collectDescendantIds returns the folder and its descendants
+    mockDb.raw.mockResolvedValueOnce({
+      rows: [{ id: "folder-1" }, { id: "child-1" }, { id: "grandchild-1" }],
+    });
+
+    await expect(moveFolder("folder-1", "grandchild-1")).rejects.toThrow(
+      "Cannot move a folder into itself or one of its descendants"
+    );
   });
 });

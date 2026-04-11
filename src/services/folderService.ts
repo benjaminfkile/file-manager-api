@@ -130,6 +130,25 @@ async function collectDescendantIds(rootId: string): Promise<string[]> {
   return result.rows.map((r) => r.id);
 }
 
+/**
+ * Move a folder to a new parent, or to root if targetParentFolderId is null.
+ * Throws if the move would create a cycle (target is the folder itself or a descendant).
+ */
+export async function moveFolder(folderId: string, targetParentFolderId: string | null): Promise<IFolder> {
+  if (targetParentFolderId !== null) {
+    const descendantIds = await collectDescendantIds(folderId);
+    if (descendantIds.includes(targetParentFolderId)) {
+      throw new Error("Cannot move a folder into itself or one of its descendants");
+    }
+  }
+  const db = getDb();
+  const [folder] = await db(FOLDERS)
+    .where({ id: folderId })
+    .update({ parent_folder_id: targetParentFolderId, updated_at: db.fn.now() })
+    .returning("*");
+  return folder;
+}
+
 /** Soft-delete a folder and all its descendants (folders + files). */
 export async function softDeleteFolder(folderId: string): Promise<void> {
   const db = getDb();
