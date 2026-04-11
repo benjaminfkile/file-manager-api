@@ -135,6 +135,7 @@ import {
   getFolderById,
   listRootFolders,
   listFolderContents,
+  moveFolder,
   renameFolder,
   softDeleteFolder,
   restoreFolder,
@@ -797,5 +798,119 @@ describe("DELETE /api/folders/:id/share/:sharedUserId", () => {
 
     expect(res.status).toBe(404);
     expect(res.body.errorMsg).toBe("Folder share not found");
+  });
+});
+
+/* ================================================================== */
+/*  PATCH /api/folders/:id/move – Move folder                         */
+/* ================================================================== */
+
+describe("PATCH /api/folders/:id/move", () => {
+  it("returns 200 with folder when moving to a valid parent folder", async () => {
+    const moved = { ...rootFolder, parent_folder_id: childFolder.id };
+    (getFolderById as jest.Mock)
+      .mockResolvedValueOnce(rootFolder)    // source folder
+      .mockResolvedValueOnce(childFolder);  // target folder
+    (moveFolder as jest.Mock).mockResolvedValue(moved);
+
+    const res = await request(app)
+      .patch(`/api/folders/${rootFolder.id}/move`)
+      .send({ parentFolderId: childFolder.id });
+
+    expect(res.status).toBe(200);
+    expect(res.body.folder).toEqual(moved);
+    expect(moveFolder).toHaveBeenCalledWith(rootFolder.id, childFolder.id);
+  });
+
+  it("returns 200 with folder when moving to root (parentFolderId: null)", async () => {
+    const moved = { ...childFolder, parent_folder_id: null };
+    (getFolderById as jest.Mock).mockResolvedValueOnce(childFolder);
+    (moveFolder as jest.Mock).mockResolvedValue(moved);
+
+    const res = await request(app)
+      .patch(`/api/folders/${childFolder.id}/move`)
+      .send({ parentFolderId: null });
+
+    expect(res.status).toBe(200);
+    expect(res.body.folder).toEqual(moved);
+    expect(moveFolder).toHaveBeenCalledWith(childFolder.id, null);
+  });
+
+  it("returns 404 when the folder to move does not exist", async () => {
+    (getFolderById as jest.Mock).mockResolvedValueOnce(null);
+
+    const res = await request(app)
+      .patch("/api/folders/nonexistent/move")
+      .send({ parentFolderId: childFolder.id });
+
+    expect(res.status).toBe(404);
+    expect(res.body.errorMsg).toBe("Folder not found");
+  });
+
+  it("returns 403 when the user does not own the folder", async () => {
+    (getFolderById as jest.Mock).mockResolvedValueOnce(otherUserFolder);
+
+    const res = await request(app)
+      .patch(`/api/folders/${otherUserFolder.id}/move`)
+      .send({ parentFolderId: rootFolder.id });
+
+    expect(res.status).toBe(403);
+    expect(res.body.errorMsg).toBe("Only the folder owner can move this folder");
+  });
+
+  it("returns 404 when the target parent folder does not exist", async () => {
+    (getFolderById as jest.Mock)
+      .mockResolvedValueOnce(rootFolder)  // source folder exists
+      .mockResolvedValueOnce(null);       // target folder does not exist
+
+    const res = await request(app)
+      .patch(`/api/folders/${rootFolder.id}/move`)
+      .send({ parentFolderId: "nonexistent-target" });
+
+    expect(res.status).toBe(404);
+    expect(res.body.errorMsg).toBe("Target folder not found");
+  });
+
+  it("returns 403 when the user does not own the target folder", async () => {
+    (getFolderById as jest.Mock)
+      .mockResolvedValueOnce(rootFolder)       // source folder owned by user
+      .mockResolvedValueOnce(otherUserFolder);  // target folder owned by other user
+
+    const res = await request(app)
+      .patch(`/api/folders/${rootFolder.id}/move`)
+      .send({ parentFolderId: otherUserFolder.id });
+
+    expect(res.status).toBe(403);
+    expect(res.body.errorMsg).toBe("You do not own the target folder");
+  });
+
+  it("returns 400 when moveFolder throws cycle detection error", async () => {
+    (getFolderById as jest.Mock)
+      .mockResolvedValueOnce(rootFolder)
+      .mockResolvedValueOnce(childFolder);
+    (moveFolder as jest.Mock).mockRejectedValue(
+      new Error("Cannot move a folder into itself or one of its descendants")
+    );
+
+    const res = await request(app)
+      .patch(`/api/folders/${rootFolder.id}/move`)
+      .send({ parentFolderId: childFolder.id });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errorMsg).toBe("Cannot move a folder into itself or one of its descendants");
+  });
+
+  it("returns 500 when moveFolder throws any other error", async () => {
+    (getFolderById as jest.Mock)
+      .mockResolvedValueOnce(rootFolder)
+      .mockResolvedValueOnce(childFolder);
+    (moveFolder as jest.Mock).mockRejectedValue(new Error("DB error"));
+
+    const res = await request(app)
+      .patch(`/api/folders/${rootFolder.id}/move`)
+      .send({ parentFolderId: childFolder.id });
+
+    expect(res.status).toBe(500);
+    expect(res.body.errorMsg).toBe("DB error");
   });
 });

@@ -1,7 +1,7 @@
 import express, { Request, Response } from "express";
 import { IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
-import { createFolder, collectFolderFiles, getDeletedFolderById, getFolderById, hardDeleteFolder, listFolderContents, listRootFolders, renameFolder, restoreFolder, softDeleteFolder } from "../services/folderService";
+import { createFolder, collectFolderFiles, getDeletedFolderById, getFolderById, hardDeleteFolder, listFolderContents, listRootFolders, moveFolder, renameFolder, restoreFolder, softDeleteFolder } from "../services/folderService";
 import { shareFolder, unshareFolder, getFolderShares } from "../services/sharingService";
 import { getDb } from "../db/db";
 import { deleteObjects, getObjectStream } from "../aws/s3Service";
@@ -217,6 +217,43 @@ foldersRouter
         error: true,
         errorMsg: (error as Error).message,
       });
+    }
+  });
+
+/**
+ * PATCH /api/folders/:id/move
+ * Move a folder to a new parent or to root. Only the owner can move.
+ * Body: { parentFolderId: string | null }
+ */
+foldersRouter
+  .route("/:id/move")
+  .patch(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const folder = await getFolderById(req.params.id);
+      if (!folder) {
+        return res.status(404).json({ status: "error", error: true, errorMsg: "Folder not found" });
+      }
+      if (folder.user_id !== user.id) {
+        return res.status(403).json({ status: "error", error: true, errorMsg: "Only the folder owner can move this folder" });
+      }
+      const targetParentFolderId: string | null = req.body.parentFolderId ?? null;
+      if (targetParentFolderId) {
+        const targetFolder = await getFolderById(targetParentFolderId);
+        if (!targetFolder) {
+          return res.status(404).json({ status: "error", error: true, errorMsg: "Target folder not found" });
+        }
+        if (targetFolder.user_id !== user.id) {
+          return res.status(403).json({ status: "error", error: true, errorMsg: "You do not own the target folder" });
+        }
+      }
+      const updated = await moveFolder(folder.id, targetParentFolderId);
+      return res.status(200).json({ folder: updated });
+    } catch (error) {
+      if ((error as Error).message === "Cannot move a folder into itself or one of its descendants") {
+        return res.status(400).json({ status: "error", error: true, errorMsg: (error as Error).message });
+      }
+      return res.status(500).json({ status: "error", error: true, errorMsg: (error as Error).message });
     }
   });
 
