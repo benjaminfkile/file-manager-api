@@ -103,6 +103,18 @@ export async function deleteObjects(keys: string[]): Promise<void> {
   );
 }
 
+export async function generatePresignedUploadUrl(
+  key: string,
+  contentType: string,
+  expiresIn: number = 900
+): Promise<string> {
+  return getSignedUrl(
+    getClient(),
+    new PutObjectCommand({ Bucket: getBucket(), Key: key, ContentType: contentType }),
+    { expiresIn }
+  );
+}
+
 export async function generatePresignedDownloadUrl(
   key: string,
   expiresInSeconds: number
