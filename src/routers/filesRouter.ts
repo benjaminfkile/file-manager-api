@@ -4,7 +4,7 @@ import { randomUUID } from "crypto";
 import { IAppSecrets, IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
 import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDeleteFile, restoreFile, hardDeleteFile, listRootFiles, moveFile } from "../services/fileService";
-import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject, getObjectStream, headObject } from "../aws/s3Service";
+import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generatePresignedUploadUrl, generateSignedCloudFrontUrl, deleteObject, getObjectStream, headObject } from "../aws/s3Service";
 import { canAccessFile } from "../utils/accessControl";
 import { getDeletedFolderById, getFolderById } from "../services/folderService";
 import { shareFile, unshareFile, getFileSharesWithUsers } from "../services/sharingService";
@@ -93,6 +93,128 @@ filesRouter
         s3Key,
         file.size,
         file.mimetype
+      );
+
+      return res.status(201).json({ file: record });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  });
+
+/**
+ * GET /api/files/presign-upload
+ * Generate a presigned S3 PUT URL so the browser can upload directly to S3.
+ * Query params: name (string), mimeType (string), sizeBytes (number), folderId (optional UUID).
+ *
+ * NOTE: The S3 bucket CORS configuration must allow PUT requests from the frontend origin.
+ * Example CORS rule:
+ * [{ "AllowedHeaders": ["Content-Type"], "AllowedMethods": ["PUT"],
+ *    "AllowedOrigins": ["https://your-frontend-domain"], "ExposeHeaders": [] }]
+ */
+filesRouter
+  .route("/presign-upload")
+  .get(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const name = req.query.name as string | undefined;
+      const mimeType = req.query.mimeType as string | undefined;
+      const sizeBytesRaw = req.query.sizeBytes as string | undefined;
+      const folderId = (req.query.folderId as string | undefined) || null;
+
+      if (!name || !mimeType) {
+        return res.status(400).json({
+          status: "error",
+          error: true,
+          errorMsg: "name and mimeType query parameters are required",
+        });
+      }
+
+      if (/[\/\\]/.test(name) || name === "." || name === "..") {
+        return res.status(400).json({
+          status: "error",
+          error: true,
+          errorMsg: "File name must not contain path traversal characters (/, \\, ., ..)",
+        });
+      }
+
+      const secrets = req.app.get("secrets") as IAppSecrets;
+      const maxBytes = Number(secrets.MAX_UPLOAD_BYTES);
+      const sizeBytes = sizeBytesRaw ? Number(sizeBytesRaw) : 0;
+
+      if (maxBytes > 0 && sizeBytes > maxBytes) {
+        return res.status(413).json({
+          status: "error",
+          error: true,
+          errorMsg: `File exceeds maximum upload size of ${maxBytes} bytes`,
+        });
+      }
+
+      const fileId = randomUUID();
+      const s3Key = buildS3Key(user.id, fileId, name);
+      const presignedUrl = await generatePresignedUploadUrl(s3Key, mimeType);
+
+      return res.status(200).json({ presignedUrl, s3Key, fileId });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  });
+
+/**
+ * POST /api/files/register
+ * Register a file record after a successful direct-to-S3 upload.
+ * Body: { fileId, name, s3Key, sizeBytes, mimeType, folderId? }
+ */
+filesRouter
+  .route("/register")
+  .post(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { fileId, name, s3Key, sizeBytes, mimeType, folderId } = req.body;
+
+      if (!fileId || !name || !s3Key || sizeBytes == null || !mimeType) {
+        return res.status(400).json({
+          status: "error",
+          error: true,
+          errorMsg: "fileId, name, s3Key, sizeBytes, and mimeType are all required",
+        });
+      }
+
+      const expectedPrefix = `files/${user.id}/`;
+      if (!s3Key.startsWith(expectedPrefix)) {
+        return res.status(400).json({
+          status: "error",
+          error: true,
+          errorMsg: `s3Key must start with ${expectedPrefix}`,
+        });
+      }
+
+      const targetFolderId: string | null = folderId || null;
+      if (targetFolderId) {
+        const folder = await getFolderById(targetFolderId);
+        if (!folder || folder.user_id !== user.id) {
+          return res.status(403).json({
+            status: "error",
+            error: true,
+            errorMsg: "Target folder not found or not owned by you",
+          });
+        }
+      }
+
+      const record = await createFileRecord(
+        user.id,
+        targetFolderId,
+        name,
+        s3Key,
+        sizeBytes,
+        mimeType
       );
 
       return res.status(201).json({ file: record });
