@@ -94,6 +94,8 @@ const rootFile: IFile = {
 /*  Mocks – service layer + middleware                                */
 /* ------------------------------------------------------------------ */
 
+let mockShouldAuthenticate = true;
+
 jest.mock("../src/middleware/protectedRoute", () => {
   const testUser = {
     id: "user-1111-1111-1111",
@@ -106,7 +108,10 @@ jest.mock("../src/middleware/protectedRoute", () => {
   };
   return {
     __esModule: true,
-    default: jest.fn(() => (req: any, _res: any, next: any) => {
+    default: jest.fn(() => (req: any, res: any, next: any) => {
+      if (!mockShouldAuthenticate) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
       req.user = testUser;
       next();
     }),
@@ -154,6 +159,7 @@ import {
   buildS3Key,
   uploadObject,
   generatePresignedDownloadUrl,
+  generatePresignedUploadUrl,
   generateSignedCloudFrontUrl,
   deleteObject,
   headObject,
@@ -168,6 +174,7 @@ import { getDb } from "../src/db/db";
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockShouldAuthenticate = true;
   (buildS3Key as jest.Mock).mockReturnValue(
     "files/user-1111-1111-1111/mock-uuid/report.pdf"
   );
@@ -952,5 +959,190 @@ describe("PATCH /api/files/:id/move", () => {
 
     expect(res.status).toBe(500);
     expect(res.body.errorMsg).toBe("move fail");
+  });
+});
+
+/* ================================================================== */
+/*  GET /api/files/presign-upload                                      */
+/* ================================================================== */
+
+describe("GET /api/files/presign-upload", () => {
+  it("returns 200 with presignedUrl, s3Key, and fileId on valid request", async () => {
+    (buildS3Key as jest.Mock).mockReturnValue(
+      "files/user-1111-1111-1111/mock-uuid/photo.jpg"
+    );
+    (generatePresignedUploadUrl as jest.Mock).mockResolvedValue(
+      "https://s3.example.com/presigned"
+    );
+
+    const res = await request(app)
+      .get("/api/files/presign-upload")
+      .query({ name: "photo.jpg", mimeType: "image/jpeg", sizeBytes: "1024" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.presignedUrl).toBe("https://s3.example.com/presigned");
+    expect(res.body.s3Key).toBe("files/user-1111-1111-1111/mock-uuid/photo.jpg");
+    expect(res.body.fileId).toBe("mock-uuid");
+    expect(buildS3Key).toHaveBeenCalledWith(testUser.id, "mock-uuid", "photo.jpg");
+    expect(generatePresignedUploadUrl).toHaveBeenCalledWith(
+      "files/user-1111-1111-1111/mock-uuid/photo.jpg",
+      "image/jpeg"
+    );
+  });
+
+  it("returns 400 when name is missing", async () => {
+    const res = await request(app)
+      .get("/api/files/presign-upload")
+      .query({ mimeType: "image/jpeg" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errorMsg).toBe("name and mimeType query parameters are required");
+  });
+
+  it("returns 400 when mimeType is missing", async () => {
+    const res = await request(app)
+      .get("/api/files/presign-upload")
+      .query({ name: "photo.jpg" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errorMsg).toBe("name and mimeType query parameters are required");
+  });
+
+  it("returns 400 when name contains path traversal characters", async () => {
+    const res = await request(app)
+      .get("/api/files/presign-upload")
+      .query({ name: "path/file.jpg", mimeType: "image/jpeg" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errorMsg).toMatch(/path traversal/);
+  });
+
+  it("returns 413 when sizeBytes exceeds MAX_UPLOAD_BYTES", async () => {
+    const res = await request(app)
+      .get("/api/files/presign-upload")
+      .query({ name: "big.bin", mimeType: "application/octet-stream", sizeBytes: "999999999" });
+
+    expect(res.status).toBe(413);
+    expect(res.body.errorMsg).toMatch(/exceeds maximum upload size/);
+  });
+
+  it("returns 401 when unauthenticated", async () => {
+    mockShouldAuthenticate = false;
+
+    const res = await request(app)
+      .get("/api/files/presign-upload")
+      .query({ name: "photo.jpg", mimeType: "image/jpeg" });
+
+    expect(res.status).toBe(401);
+  });
+});
+
+/* ================================================================== */
+/*  POST /api/files/register                                           */
+/* ================================================================== */
+
+describe("POST /api/files/register", () => {
+  const validBody = {
+    fileId: "mock-uuid",
+    name: "photo.jpg",
+    s3Key: `files/${testUser.id}/mock-uuid/photo.jpg`,
+    sizeBytes: 1024,
+    mimeType: "image/jpeg",
+  };
+
+  it("returns 201 with file record on valid request", async () => {
+    (createFileRecord as jest.Mock).mockResolvedValue(fakeFile);
+
+    const res = await request(app)
+      .post("/api/files/register")
+      .send(validBody);
+
+    expect(res.status).toBe(201);
+    expect(res.body.file).toEqual(fakeFile);
+    expect(createFileRecord).toHaveBeenCalledWith(
+      testUser.id,
+      null,
+      validBody.name,
+      validBody.s3Key,
+      validBody.sizeBytes,
+      validBody.mimeType
+    );
+  });
+
+  it("returns 400 when required fields are missing", async () => {
+    const res = await request(app)
+      .post("/api/files/register")
+      .send({ fileId: "mock-uuid" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errorMsg).toMatch(/required/);
+  });
+
+  it("returns 400 when s3Key does not start with files/<userId>/", async () => {
+    const res = await request(app)
+      .post("/api/files/register")
+      .send({ ...validBody, s3Key: "files/other-user/mock-uuid/photo.jpg" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errorMsg).toMatch(/s3Key must start with/);
+  });
+
+  it("returns 403 when target folder not found", async () => {
+    (getFolderById as jest.Mock).mockResolvedValue(null);
+
+    const res = await request(app)
+      .post("/api/files/register")
+      .send({ ...validBody, folderId: "folder-nonexistent" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.errorMsg).toMatch(/not found or not owned/);
+  });
+
+  it("returns 403 when target folder is owned by another user", async () => {
+    (getFolderById as jest.Mock).mockResolvedValue({
+      id: "folder-other",
+      user_id: otherUser.id,
+      name: "Other Folder",
+    });
+
+    const res = await request(app)
+      .post("/api/files/register")
+      .send({ ...validBody, folderId: "folder-other" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.errorMsg).toMatch(/not found or not owned/);
+  });
+
+  it("returns 201 and assigns folderId when target folder is valid", async () => {
+    (getFolderById as jest.Mock).mockResolvedValue({
+      id: "folder-1111-1111-1111",
+      user_id: testUser.id,
+      name: "My Folder",
+    });
+    (createFileRecord as jest.Mock).mockResolvedValue(fakeFile);
+
+    const res = await request(app)
+      .post("/api/files/register")
+      .send({ ...validBody, folderId: "folder-1111-1111-1111" });
+
+    expect(res.status).toBe(201);
+    expect(createFileRecord).toHaveBeenCalledWith(
+      testUser.id,
+      "folder-1111-1111-1111",
+      validBody.name,
+      validBody.s3Key,
+      validBody.sizeBytes,
+      validBody.mimeType
+    );
+  });
+
+  it("returns 401 when unauthenticated", async () => {
+    mockShouldAuthenticate = false;
+
+    const res = await request(app)
+      .post("/api/files/register")
+      .send(validBody);
+
+    expect(res.status).toBe(401);
   });
 });
