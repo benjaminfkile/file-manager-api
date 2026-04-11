@@ -146,8 +146,9 @@ import {
   softDeleteFile,
   restoreFile,
   hardDeleteFile,
+  moveFile,
 } from "../src/services/fileService";
-import { getDeletedFolderById } from "../src/services/folderService";
+import { getDeletedFolderById, getFolderById } from "../src/services/folderService";
 import { canAccessFile } from "../src/utils/accessControl";
 import {
   buildS3Key,
@@ -840,5 +841,116 @@ describe("GET /api/files/:id/shares", () => {
 
     expect(res.status).toBe(403);
     expect(res.body.errorMsg).toMatch(/Only the file owner/);
+  });
+});
+
+/* ================================================================== */
+/*  PATCH /api/files/:id/move – Move file                              */
+/* ================================================================== */
+
+describe("PATCH /api/files/:id/move", () => {
+  const fakeFolder = {
+    id: "folder-1111-1111-1111",
+    user_id: testUser.id,
+    parent_folder_id: null,
+    name: "My Folder",
+    is_deleted: false,
+    deleted_at: null,
+    created_at: "2026-04-01T00:00:00.000Z",
+    updated_at: "2026-04-01T00:00:00.000Z",
+  };
+
+  const otherUserFolder = {
+    ...fakeFolder,
+    id: "folder-2222-2222-2222",
+    user_id: otherUser.id,
+  };
+
+  it("returns 200 with file when moving to a valid folder owned by the user", async () => {
+    const movedFile = { ...fakeFile, folder_id: fakeFolder.id };
+    (getFileById as jest.Mock).mockResolvedValue(fakeFile);
+    (getFolderById as jest.Mock).mockResolvedValue(fakeFolder);
+    (moveFile as jest.Mock).mockResolvedValue(movedFile);
+
+    const res = await request(app)
+      .patch(`/api/files/${fakeFile.id}/move`)
+      .send({ folderId: fakeFolder.id });
+
+    expect(res.status).toBe(200);
+    expect(res.body.file).toEqual(movedFile);
+    expect(moveFile).toHaveBeenCalledWith(fakeFile.id, fakeFolder.id);
+  });
+
+  it("returns 200 with file when moving to root (folderId: null)", async () => {
+    const movedFile = { ...fakeFile, folder_id: null };
+    (getFileById as jest.Mock).mockResolvedValue(fakeFile);
+    (moveFile as jest.Mock).mockResolvedValue(movedFile);
+
+    const res = await request(app)
+      .patch(`/api/files/${fakeFile.id}/move`)
+      .send({ folderId: null });
+
+    expect(res.status).toBe(200);
+    expect(res.body.file).toEqual(movedFile);
+    expect(moveFile).toHaveBeenCalledWith(fakeFile.id, null);
+    expect(getFolderById).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when the file does not exist", async () => {
+    (getFileById as jest.Mock).mockResolvedValue(null);
+
+    const res = await request(app)
+      .patch("/api/files/nonexistent/move")
+      .send({ folderId: fakeFolder.id });
+
+    expect(res.status).toBe(404);
+    expect(res.body.errorMsg).toBe("File not found");
+  });
+
+  it("returns 403 when the authenticated user does not own the file", async () => {
+    (getFileById as jest.Mock).mockResolvedValue(otherUserFile);
+
+    const res = await request(app)
+      .patch(`/api/files/${otherUserFile.id}/move`)
+      .send({ folderId: fakeFolder.id });
+
+    expect(res.status).toBe(403);
+    expect(res.body.errorMsg).toBe("Only the file owner can move this file");
+  });
+
+  it("returns 404 when the target folder does not exist", async () => {
+    (getFileById as jest.Mock).mockResolvedValue(fakeFile);
+    (getFolderById as jest.Mock).mockResolvedValue(null);
+
+    const res = await request(app)
+      .patch(`/api/files/${fakeFile.id}/move`)
+      .send({ folderId: "folder-nonexistent" });
+
+    expect(res.status).toBe(404);
+    expect(res.body.errorMsg).toBe("Target folder not found");
+  });
+
+  it("returns 403 when the target folder is not owned by the authenticated user", async () => {
+    (getFileById as jest.Mock).mockResolvedValue(fakeFile);
+    (getFolderById as jest.Mock).mockResolvedValue(otherUserFolder);
+
+    const res = await request(app)
+      .patch(`/api/files/${fakeFile.id}/move`)
+      .send({ folderId: otherUserFolder.id });
+
+    expect(res.status).toBe(403);
+    expect(res.body.errorMsg).toBe("You do not own the target folder");
+  });
+
+  it("returns 500 when moveFile throws an unexpected error", async () => {
+    (getFileById as jest.Mock).mockResolvedValue(fakeFile);
+    (moveFile as jest.Mock).mockRejectedValue(new Error("move fail"));
+
+    const res = await request(app)
+      .patch(`/api/files/${fakeFile.id}/move`)
+      .send({ folderId: null });
+
+    expect(res.status).toBe(500);
+    expect(res.body.errorMsg).toBe("move fail");
   });
 });
