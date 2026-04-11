@@ -3,10 +3,10 @@ import multer, { memoryStorage } from "multer";
 import { randomUUID } from "crypto";
 import { IAppSecrets, IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
-import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDeleteFile, restoreFile, hardDeleteFile, listRootFiles } from "../services/fileService";
+import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDeleteFile, restoreFile, hardDeleteFile, listRootFiles, moveFile } from "../services/fileService";
 import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject, getObjectStream, headObject } from "../aws/s3Service";
 import { canAccessFile } from "../utils/accessControl";
-import { getDeletedFolderById } from "../services/folderService";
+import { getDeletedFolderById, getFolderById } from "../services/folderService";
 import { shareFile, unshareFile, getFileSharesWithUsers } from "../services/sharingService";
 import { getDb } from "../db/db";
 
@@ -320,6 +320,40 @@ filesRouter
         error: true,
         errorMsg: (error as Error).message,
       });
+    }
+  });
+
+/**
+ * PATCH /api/files/:id/move
+ * Move a file to a different folder or to root. Only the owner can move.
+ * Body: { folderId: string | null }
+ */
+filesRouter
+  .route("/:id/move")
+  .patch(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const file = await getFileById(req.params.id);
+      if (!file) {
+        return res.status(404).json({ status: "error", error: true, errorMsg: "File not found" });
+      }
+      if (file.user_id !== user.id) {
+        return res.status(403).json({ status: "error", error: true, errorMsg: "Only the file owner can move this file" });
+      }
+      const targetFolderId: string | null = req.body.folderId ?? null;
+      if (targetFolderId) {
+        const targetFolder = await getFolderById(targetFolderId);
+        if (!targetFolder) {
+          return res.status(404).json({ status: "error", error: true, errorMsg: "Target folder not found" });
+        }
+        if (targetFolder.user_id !== user.id) {
+          return res.status(403).json({ status: "error", error: true, errorMsg: "You do not own the target folder" });
+        }
+      }
+      const updated = await moveFile(file.id, targetFolderId);
+      return res.status(200).json({ file: updated });
+    } catch (error) {
+      return res.status(500).json({ status: "error", error: true, errorMsg: (error as Error).message });
     }
   });
 
