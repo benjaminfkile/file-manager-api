@@ -91,6 +91,16 @@ export async function renameFile(
   return file;
 }
 
+/** Move a file to a different folder, or to root if targetFolderId is null. */
+export async function moveFile(fileId: string, targetFolderId: string | null): Promise<IFile> {
+  const db = getDb();
+  const [file] = await db(FILES)
+    .where({ id: fileId })
+    .update({ folder_id: targetFolderId, updated_at: db.fn.now() })
+    .returning("*");
+  return file;
+}
+
 /** Soft-delete a file. */
 export async function softDeleteFile(fileId: string): Promise<void> {
   const db = getDb();

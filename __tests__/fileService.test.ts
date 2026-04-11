@@ -29,6 +29,7 @@ jest.mock("../src/db/db", () => ({
 
 import {
   createFileRecord,
+  moveFile,
   softDeleteFile,
   restoreFile,
   hardDeleteFile,
@@ -108,6 +109,41 @@ describe("createFileRecord", () => {
     expect(mockQueryBuilder.insert).toHaveBeenCalledWith(
       expect.objectContaining({ folder_id: null })
     );
+    expect(result).toEqual(rootFile);
+  });
+});
+
+/* ================================================================== */
+/*  moveFile                                                          */
+/* ================================================================== */
+
+describe("moveFile", () => {
+  it("moves a file to a folder", async () => {
+    const movedFile: IFile = { ...fakeFile, folder_id: "some-folder-id" };
+    mockQueryBuilder.returning.mockResolvedValueOnce([movedFile]);
+
+    const result = await moveFile("file-1", "some-folder-id");
+
+    expect(mockDb).toHaveBeenCalledWith("files");
+    expect(mockQueryBuilder.where).toHaveBeenCalledWith({ id: "file-1" });
+    expect(mockQueryBuilder.update).toHaveBeenCalledWith({
+      folder_id: "some-folder-id",
+      updated_at: "NOW()",
+    });
+    expect(mockQueryBuilder.returning).toHaveBeenCalledWith("*");
+    expect(result).toEqual(movedFile);
+  });
+
+  it("moves a file to root (null folder)", async () => {
+    const rootFile: IFile = { ...fakeFile, folder_id: null };
+    mockQueryBuilder.returning.mockResolvedValueOnce([rootFile]);
+
+    const result = await moveFile("file-1", null);
+
+    expect(mockQueryBuilder.update).toHaveBeenCalledWith({
+      folder_id: null,
+      updated_at: "NOW()",
+    });
     expect(result).toEqual(rootFile);
   });
 });
