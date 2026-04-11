@@ -3,7 +3,7 @@ import multer, { memoryStorage } from "multer";
 import { randomUUID } from "crypto";
 import { IAppSecrets, IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
-import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDeleteFile, restoreFile, hardDeleteFile } from "../services/fileService";
+import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDeleteFile, restoreFile, hardDeleteFile, listRootFiles } from "../services/fileService";
 import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject, getObjectStream, headObject } from "../aws/s3Service";
 import { canAccessFile } from "../utils/accessControl";
 import { getDeletedFolderById } from "../services/folderService";
@@ -11,6 +11,26 @@ import { shareFile, unshareFile, getFileSharesWithUsers } from "../services/shar
 import { getDb } from "../db/db";
 
 const filesRouter = express.Router();
+
+/**
+ * GET /api/files
+ * List root-level (no folder) non-deleted files for the authenticated user.
+ */
+filesRouter
+  .route("/")
+  .get(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const files = await listRootFiles(user.id);
+      return res.status(200).json({ files });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  });
 
 /**
  * POST /api/files/upload

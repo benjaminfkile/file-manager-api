@@ -58,6 +58,15 @@ export async function getDeletedFileById(fileId: string): Promise<IFile | null> 
   return file ?? null;
 }
 
+/** List all non-deleted root-level files for a user (folder_id IS NULL). */
+export async function listRootFiles(userId: string): Promise<IFile[]> {
+  const db = getDb();
+  return db(FILES)
+    .where({ user_id: userId, is_deleted: false })
+    .whereNull("folder_id")
+    .orderBy("name", "asc");
+}
+
 /** List all non-deleted files in a folder for a given user. */
 export async function listFilesInFolder(
   folderId: string,
