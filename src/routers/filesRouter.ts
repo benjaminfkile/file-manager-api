@@ -8,6 +8,7 @@ import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedC
 import { canAccessFile } from "../utils/accessControl";
 import { getDeletedFolderById, getFolderById } from "../services/folderService";
 import { shareFile, unshareFile, getFileSharesWithUsers } from "../services/sharingService";
+import { createShareLink, getShareLinksForResource, deleteShareLink } from "../services/shareLinkService";
 import { getDb } from "../db/db";
 
 const filesRouter = express.Router();
@@ -626,6 +627,134 @@ filesRouter
         status: "error",
         error: true,
         errorMsg: (error as Error).message,
+      });
+    }
+  });
+
+/**
+ * POST /api/files/:id/share-links
+ * Create a public share link for a file. Only the owner can create.
+ * Body: { expiresAt?: string } (ISO 8601 or null)
+ */
+filesRouter
+  .route("/:id/share-links")
+  .post(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const fileId = req.params.id;
+
+      const file = await getFileById(fileId);
+      if (!file) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "File not found",
+        });
+      }
+
+      if (file.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Only the file owner can create share links",
+        });
+      }
+
+      const expiresAt = req.body.expiresAt ? new Date(req.body.expiresAt) : null;
+      const link = await createShareLink(user.id, "file", fileId, expiresAt);
+
+      return res.status(201).json({ link });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  })
+  /**
+   * GET /api/files/:id/share-links
+   * List all public share links for a file. Only the owner can view.
+   */
+  .get(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const fileId = req.params.id;
+
+      const file = await getFileById(fileId);
+      if (!file) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "File not found",
+        });
+      }
+
+      if (file.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Only the file owner can view share links",
+        });
+      }
+
+      const links = await getShareLinksForResource(user.id, "file", fileId);
+
+      return res.status(200).json({ links });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  });
+
+/**
+ * DELETE /api/files/:id/share-links/:linkId
+ * Delete a public share link for a file. Only the owner can delete.
+ */
+filesRouter
+  .route("/:id/share-links/:linkId")
+  .delete(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const fileId = req.params.id;
+      const linkId = req.params.linkId;
+
+      const file = await getFileById(fileId);
+      if (!file) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "File not found",
+        });
+      }
+
+      if (file.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Only the file owner can delete share links",
+        });
+      }
+
+      await deleteShareLink(linkId, user.id);
+
+      return res.status(204).send();
+    } catch (error) {
+      const message = (error as Error).message;
+      if (message === "Share link not found") {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: message,
+        });
+      }
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: message,
       });
     }
   });
