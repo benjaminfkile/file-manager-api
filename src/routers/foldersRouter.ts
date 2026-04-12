@@ -3,6 +3,7 @@ import { IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
 import { createFolder, collectFolderFiles, getDeletedFolderById, getFolderById, hardDeleteFolder, listFolderContents, listRootFolders, moveFolder, renameFolder, restoreFolder, softDeleteFolder } from "../services/folderService";
 import { shareFolder, unshareFolder, getFolderShares } from "../services/sharingService";
+import { createShareLink, getShareLinksForResource, deleteShareLink } from "../services/shareLinkService";
 import { getDb } from "../db/db";
 import { deleteObjects, getObjectStream } from "../aws/s3Service";
 import { canAccessFolder } from "../utils/accessControl";
@@ -594,6 +595,134 @@ foldersRouter
     } catch (error) {
       const message = (error as Error).message;
       if (message === "Folder share not found") {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: message,
+        });
+      }
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: message,
+      });
+    }
+  });
+
+/**
+ * POST /api/folders/:id/share-links
+ * Create a public share link for a folder. Only the owner can create.
+ * Body: { expiresAt?: string } (ISO 8601 or null)
+ */
+foldersRouter
+  .route("/:id/share-links")
+  .post(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const folderId = req.params.id;
+
+      const folder = await getFolderById(folderId);
+      if (!folder) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "Folder not found",
+        });
+      }
+
+      if (folder.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Only the folder owner can create share links",
+        });
+      }
+
+      const expiresAt = req.body.expiresAt ? new Date(req.body.expiresAt) : null;
+      const link = await createShareLink(user.id, "folder", folderId, expiresAt);
+
+      return res.status(201).json({ link });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  })
+  /**
+   * GET /api/folders/:id/share-links
+   * List all public share links for a folder. Only the owner can view.
+   */
+  .get(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const folderId = req.params.id;
+
+      const folder = await getFolderById(folderId);
+      if (!folder) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "Folder not found",
+        });
+      }
+
+      if (folder.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Only the folder owner can view share links",
+        });
+      }
+
+      const links = await getShareLinksForResource(user.id, "folder", folderId);
+
+      return res.status(200).json({ links });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  });
+
+/**
+ * DELETE /api/folders/:id/share-links/:linkId
+ * Delete a public share link for a folder. Only the owner can delete.
+ */
+foldersRouter
+  .route("/:id/share-links/:linkId")
+  .delete(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const folderId = req.params.id;
+      const linkId = req.params.linkId;
+
+      const folder = await getFolderById(folderId);
+      if (!folder) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "Folder not found",
+        });
+      }
+
+      if (folder.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Only the folder owner can delete share links",
+        });
+      }
+
+      await deleteShareLink(linkId, user.id);
+
+      return res.status(204).send();
+    } catch (error) {
+      const message = (error as Error).message;
+      if (message === "Share link not found") {
         return res.status(404).json({
           status: "error",
           error: true,
