@@ -121,6 +121,7 @@ jest.mock("../src/middleware/protectedRoute", () => {
 jest.mock("../src/services/fileService");
 jest.mock("../src/services/folderService");
 jest.mock("../src/services/sharingService");
+jest.mock("../src/services/shareLinkService");
 jest.mock("../src/utils/accessControl");
 jest.mock("../src/aws/s3Service");
 jest.mock("../src/db/db", () => ({
@@ -166,6 +167,7 @@ import {
   getObjectStream,
 } from "../src/aws/s3Service";
 import { shareFile, unshareFile, getFileSharesWithUsers } from "../src/services/sharingService";
+import { createShareLink, getShareLinkForFile, revokeShareLink } from "../src/services/shareLinkService";
 import { getDb } from "../src/db/db";
 
 /* ------------------------------------------------------------------ */
@@ -1144,5 +1146,107 @@ describe("POST /api/files/register", () => {
       .send(validBody);
 
     expect(res.status).toBe(401);
+  });
+});
+
+/* ================================================================== */
+/*  POST /api/files/:id/link – Create share link for a file            */
+/* ================================================================== */
+
+const fakeShareLink = {
+  id: "link-1",
+  token: "a".repeat(64),
+  file_id: "file-aaaa-aaaa-aaaa",
+  folder_id: null,
+  created_by_user_id: testUser.id,
+  expires_at: "2027-01-01T00:00:00.000Z",
+  created_at: "2026-04-08T00:00:00.000Z",
+};
+
+describe("POST /api/files/:id/link", () => {
+  it("returns 201 with share link", async () => {
+    (getFileById as jest.Mock).mockResolvedValue(fakeFile);
+    (createShareLink as jest.Mock).mockResolvedValue(fakeShareLink);
+
+    const res = await request(app)
+      .post(`/api/files/${fakeFile.id}/link`)
+      .send({ expiresInSeconds: 3600 });
+
+    expect(res.status).toBe(201);
+    expect(res.body.shareLink).toEqual(fakeShareLink);
+    expect(createShareLink).toHaveBeenCalledWith(
+      testUser.id,
+      { fileId: fakeFile.id },
+      3600
+    );
+  });
+
+  it("returns 403 when non-owner tries to create link", async () => {
+    (getFileById as jest.Mock).mockResolvedValue(otherUserFile);
+
+    const res = await request(app)
+      .post(`/api/files/${otherUserFile.id}/link`)
+      .send({ expiresInSeconds: 3600 });
+
+    expect(res.status).toBe(403);
+    expect(res.body.errorMsg).toBe("Access denied");
+  });
+
+  it("returns 400 for invalid expiresInSeconds (negative)", async () => {
+    const res = await request(app)
+      .post(`/api/files/${fakeFile.id}/link`)
+      .send({ expiresInSeconds: -1 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errorMsg).toMatch(/expiresInSeconds must be a positive integer/);
+  });
+});
+
+/* ================================================================== */
+/*  DELETE /api/files/:id/link – Revoke share link for a file          */
+/* ================================================================== */
+
+describe("DELETE /api/files/:id/link", () => {
+  it("returns 204 when owner revokes link", async () => {
+    (getShareLinkForFile as jest.Mock).mockResolvedValue(fakeShareLink);
+    (revokeShareLink as jest.Mock).mockResolvedValue(undefined);
+
+    const res = await request(app).delete(`/api/files/${fakeFile.id}/link`);
+
+    expect(res.status).toBe(204);
+    expect(revokeShareLink).toHaveBeenCalledWith(fakeShareLink.id, testUser.id);
+  });
+
+  it("returns 404 when no existing link", async () => {
+    (getShareLinkForFile as jest.Mock).mockResolvedValue(null);
+
+    const res = await request(app).delete(`/api/files/${fakeFile.id}/link`);
+
+    expect(res.status).toBe(404);
+    expect(res.body.errorMsg).toBe("Share link not found");
+  });
+});
+
+/* ================================================================== */
+/*  GET /api/files/:id/link – Get active share link for a file         */
+/* ================================================================== */
+
+describe("GET /api/files/:id/link", () => {
+  it("returns active link", async () => {
+    (getShareLinkForFile as jest.Mock).mockResolvedValue(fakeShareLink);
+
+    const res = await request(app).get(`/api/files/${fakeFile.id}/link`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.shareLink).toEqual(fakeShareLink);
+  });
+
+  it("returns { shareLink: null } when no link exists", async () => {
+    (getShareLinkForFile as jest.Mock).mockResolvedValue(null);
+
+    const res = await request(app).get(`/api/files/${fakeFile.id}/link`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.shareLink).toBeNull();
   });
 });
