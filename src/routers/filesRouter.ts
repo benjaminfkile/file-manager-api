@@ -8,6 +8,7 @@ import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generatePresign
 import { canAccessFile } from "../utils/accessControl";
 import { getDeletedFolderById, getFolderById } from "../services/folderService";
 import { shareFile, unshareFile, getFileSharesWithUsers } from "../services/sharingService";
+import { createShareLink, getShareLinkForFile, revokeShareLink } from "../services/shareLinkService";
 import { getDb } from "../db/db";
 
 const filesRouter = express.Router();
@@ -743,6 +744,109 @@ filesRouter
       const sharedWith = await getFileSharesWithUsers(fileId);
 
       return res.status(200).json({ sharedWith });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  });
+
+const MAX_EXPIRY_SECONDS = 365 * 24 * 3600;
+
+/**
+ * POST /api/files/:id/link
+ * Create a share link for a file. Only the owner can create.
+ * Body: { expiresInSeconds: number | null }
+ */
+filesRouter
+  .route("/:id/link")
+  .post(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { id } = req.params;
+      const { expiresInSeconds } = req.body;
+
+      if (expiresInSeconds !== null && expiresInSeconds !== undefined) {
+        if (!Number.isInteger(expiresInSeconds) || expiresInSeconds <= 0 || expiresInSeconds > MAX_EXPIRY_SECONDS) {
+          return res.status(400).json({
+            status: "error",
+            error: true,
+            errorMsg: `expiresInSeconds must be a positive integer <= ${MAX_EXPIRY_SECONDS}, or null`,
+          });
+        }
+      }
+
+      const file = await getFileById(id);
+      if (!file) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "File not found",
+        });
+      }
+
+      if (file.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Access denied",
+        });
+      }
+
+      const shareLink = await createShareLink(user.id, { fileId: id }, expiresInSeconds ?? null);
+
+      return res.status(201).json({ shareLink });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  })
+  /**
+   * DELETE /api/files/:id/link
+   * Revoke the share link for a file. Only the owner can revoke.
+   */
+  .delete(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { id } = req.params;
+
+      const link = await getShareLinkForFile(id, user.id);
+      if (!link) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "Share link not found",
+        });
+      }
+
+      await revokeShareLink(link.id, user.id);
+
+      return res.status(204).send();
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  })
+  /**
+   * GET /api/files/:id/link
+   * Get the active share link for a file, or { shareLink: null } if none.
+   */
+  .get(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { id } = req.params;
+
+      const link = await getShareLinkForFile(id, user.id);
+
+      return res.status(200).json({ shareLink: link });
     } catch (error) {
       return res.status(500).json({
         status: "error",

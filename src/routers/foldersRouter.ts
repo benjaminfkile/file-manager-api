@@ -3,6 +3,7 @@ import { IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
 import { createFolder, collectFolderFiles, getDeletedFolderById, getFolderById, hardDeleteFolder, listFolderContents, listRootFolders, moveFolder, renameFolder, restoreFolder, softDeleteFolder } from "../services/folderService";
 import { shareFolder, unshareFolder, getFolderShares } from "../services/sharingService";
+import { createShareLink, getShareLinkForFolder, revokeShareLink } from "../services/shareLinkService";
 import { getDb } from "../db/db";
 import { deleteObjects, getObjectStream } from "../aws/s3Service";
 import { canAccessFolder } from "../utils/accessControl";
@@ -604,6 +605,109 @@ foldersRouter
         status: "error",
         error: true,
         errorMsg: message,
+      });
+    }
+  });
+
+const MAX_EXPIRY_SECONDS = 365 * 24 * 3600;
+
+/**
+ * POST /api/folders/:id/link
+ * Create a share link for a folder. Only the owner can create.
+ * Body: { expiresInSeconds: number | null }
+ */
+foldersRouter
+  .route("/:id/link")
+  .post(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { id } = req.params;
+      const { expiresInSeconds } = req.body;
+
+      if (expiresInSeconds !== null && expiresInSeconds !== undefined) {
+        if (!Number.isInteger(expiresInSeconds) || expiresInSeconds <= 0 || expiresInSeconds > MAX_EXPIRY_SECONDS) {
+          return res.status(400).json({
+            status: "error",
+            error: true,
+            errorMsg: `expiresInSeconds must be a positive integer <= ${MAX_EXPIRY_SECONDS}, or null`,
+          });
+        }
+      }
+
+      const folder = await getFolderById(id);
+      if (!folder) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "Folder not found",
+        });
+      }
+
+      if (folder.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Access denied",
+        });
+      }
+
+      const shareLink = await createShareLink(user.id, { folderId: id }, expiresInSeconds ?? null);
+
+      return res.status(201).json({ shareLink });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  })
+  /**
+   * DELETE /api/folders/:id/link
+   * Revoke the share link for a folder. Only the owner can revoke.
+   */
+  .delete(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { id } = req.params;
+
+      const link = await getShareLinkForFolder(id, user.id);
+      if (!link) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "Share link not found",
+        });
+      }
+
+      await revokeShareLink(link.id, user.id);
+
+      return res.status(204).send();
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  })
+  /**
+   * GET /api/folders/:id/link
+   * Get the active share link for a folder, or { shareLink: null } if none.
+   */
+  .get(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { id } = req.params;
+
+      const link = await getShareLinkForFolder(id, user.id);
+
+      return res.status(200).json({ shareLink: link });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
       });
     }
   });
