@@ -78,6 +78,17 @@ export interface IFolderShare {
   created_at: string;
 }
 
+// ---- Public share link record from the public_share_links table ----
+export interface IPublicShareLink {
+  id: string;
+  token: string;
+  resource_type: 'file' | 'folder';
+  resource_id: string;
+  owner_user_id: string;
+  expires_at: string | null;
+  created_at: string;
+}
+
 // ---- DB health check result ----
 export interface IDBHealth {
   connected: boolean;
