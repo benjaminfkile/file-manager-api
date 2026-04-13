@@ -7,6 +7,7 @@ import foldersRouter from "./routers/foldersRouter";
 import filesRouter from "./routers/filesRouter";
 import recycleBinRouter from "./routers/recycleBinRouter";
 import sharedRouter from "./routers/sharedRouter";
+import shareLinkRouter from "./routers/shareLinkRouter";
 
 const app: Express = express();
 
@@ -26,6 +27,7 @@ app.use("/api/folders", foldersRouter);
 app.use("/api/files", filesRouter);
 app.use("/api/recycle-bin", recycleBinRouter);
 app.use("/api/shared", sharedRouter);
+app.use("/api/share-links", shareLinkRouter);
 
 app.use(function errorHandler(
   err: Error,

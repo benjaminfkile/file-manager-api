@@ -13,7 +13,7 @@ const config: Knex.Config = {
     database: process.env.DB_NAME || "postgres",
     port: parseInt(process.env.DB_PORT || "5432", 10),
     ssl:
-      process.env.NODE_ENV === "production"
+      process.env.DB_SSL === "true"
         ? { rejectUnauthorized: false }
         : false,
   },

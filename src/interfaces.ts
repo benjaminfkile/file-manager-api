@@ -93,6 +93,17 @@ export interface ISharedFolder extends IFolder {
   shared_by: ISharedByUser;
 }
 
+// ---- Share link record from the share_links table ----
+export interface IShareLink {
+  id: string;
+  token: string;
+  item_type: "file" | "folder";
+  item_id: string;
+  owner_user_id: string;
+  expires_at: string | null;
+  created_at: string;
+}
+
 // ---- DB health check result ----
 export interface IDBHealth {
   connected: boolean;

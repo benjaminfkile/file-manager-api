@@ -1,11 +1,12 @@
 import { getDb } from "../db/db";
-import { IFile, IFileShare, IFolder, IFolderShare, ISharedFile, ISharedFolder } from "../interfaces";
+import { IFile, IFileShare, IFolder, IFolderShare, IShareLink, ISharedFile, ISharedFolder } from "../interfaces";
 
 const FILE_SHARES = "file_shares";
 const FOLDER_SHARES = "folder_shares";
 const FILES = "files";
 const FOLDERS = "folders";
 const USERS = "users";
+const SHARE_LINKS = "share_links";
 
 /** Share a file with another user by username. */
 export async function shareFile(
@@ -201,4 +202,81 @@ export async function getItemsSharedWithUser(
   }));
 
   return { files, folders };
+}
+
+// ---------------------------------------------------------------------------
+// Share links (public read-only links with optional expiry)
+// ---------------------------------------------------------------------------
+
+/** Create a public share link for a file or folder. */
+export async function createShareLink(
+  itemType: "file" | "folder",
+  itemId: string,
+  ownerUserId: string,
+  expiresAt?: string | null
+): Promise<IShareLink> {
+  const db = getDb();
+  const [link] = await db(SHARE_LINKS)
+    .insert({
+      item_type: itemType,
+      item_id: itemId,
+      owner_user_id: ownerUserId,
+      expires_at: expiresAt ?? null,
+    })
+    .returning("*");
+  return link;
+}
+
+/** Get a share link by token. Returns null if not found or expired. */
+export async function getShareLinkByToken(token: string): Promise<IShareLink | null> {
+  const db = getDb();
+  const link = await db(SHARE_LINKS).where({ token }).first();
+  if (!link) return null;
+  if (link.expires_at && new Date(link.expires_at) < new Date()) return null;
+  return link;
+}
+
+/** Revoke a share link. Only the owner can revoke. */
+export async function revokeShareLink(token: string, ownerUserId: string): Promise<void> {
+  const db = getDb();
+  const deleted = await db(SHARE_LINKS)
+    .where({ token, owner_user_id: ownerUserId })
+    .del();
+  if (deleted === 0) {
+    throw new Error("Share link not found");
+  }
+}
+
+/** List all share links for a given item owned by a specific user. */
+export async function getShareLinksForItem(
+  itemType: "file" | "folder",
+  itemId: string,
+  ownerUserId: string
+): Promise<IShareLink[]> {
+  const db = getDb();
+  return db(SHARE_LINKS)
+    .where({ item_type: itemType, item_id: itemId, owner_user_id: ownerUserId })
+    .orderBy("created_at", "asc");
+}
+
+/**
+ * Returns true if folderId equals ancestorFolderId or is a descendant of it.
+ * Used to validate subfolder access via a share link.
+ */
+export async function isFolderDescendant(
+  folderId: string,
+  ancestorFolderId: string
+): Promise<boolean> {
+  if (folderId === ancestorFolderId) return true;
+  const db = getDb();
+  let currentId: string | null = folderId;
+  while (currentId) {
+    const row: IFolder | undefined = await db(FOLDERS)
+      .where({ id: currentId, is_deleted: false })
+      .first();
+    if (!row) return false;
+    if (row.parent_folder_id === ancestorFolderId) return true;
+    currentId = row.parent_folder_id;
+  }
+  return false;
 }
