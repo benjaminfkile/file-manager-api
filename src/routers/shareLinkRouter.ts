@@ -8,7 +8,7 @@ import {
   isFolderDescendant,
 } from "../services/sharingService";
 import { getFileById } from "../services/fileService";
-import { getFolderById, listFolderContents } from "../services/folderService";
+import { getFolderById, listFolderContents, collectFolderFiles } from "../services/folderService";
 import {
   generatePresignedDownloadUrl,
   generateSignedCloudFrontUrl,
@@ -16,6 +16,7 @@ import {
   headObject,
 } from "../aws/s3Service";
 import { IAppSecrets, IShareLink, IUser } from "../interfaces";
+import archiver from "archiver";
 
 const shareLinkRouter = express.Router();
 
@@ -332,6 +333,78 @@ shareLinkRouter
       );
 
       stream.pipe(res);
+    } catch (err: any) {
+      if (!res.headersSent) {
+        return res.status(500).json({ error: true, errorMsg: err.message });
+      }
+    }
+  });
+
+// ---------------------------------------------------------------------------
+// Public: download a folder as a ZIP via share link
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/share-links/:token/folders/:folderId/download
+ * folderId must be the shared folder itself or a descendant of it.
+ */
+shareLinkRouter
+  .route("/:token/folders/:folderId/download")
+  .get(async (req: Request, res: Response) => {
+    try {
+      const link = await getShareLinkByToken(req.params.token);
+      if (!link) {
+        return res
+          .status(404)
+          .json({ error: true, errorMsg: "Share link not found or has expired" });
+      }
+
+      if (link.item_type !== "folder") {
+        return res
+          .status(400)
+          .json({ error: true, errorMsg: "This share link points to a file, not a folder" });
+      }
+
+      const { folderId } = req.params;
+      const isDescendant = await isFolderDescendant(folderId, link.item_id);
+      if (!isDescendant) {
+        return res
+          .status(403)
+          .json({ error: true, errorMsg: "Folder is not accessible via this share link" });
+      }
+
+      const folder = await getFolderById(folderId);
+      if (!folder || folder.is_deleted) {
+        return res.status(404).json({ error: true, errorMsg: "Folder not found" });
+      }
+
+      const files = await collectFolderFiles(folderId);
+
+      const encodedName = encodeURIComponent(`${folder.name}.zip`).replace(/'/g, "%27");
+      const safeName = `${folder.name}.zip`.replace(/"/g, '\\"');
+
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${safeName}"; filename*=UTF-8''${encodedName}`
+      );
+
+      const archive = archiver("zip", { zlib: { level: 5 } });
+
+      archive.on("error", (err) => {
+        if (!res.headersSent) {
+          res.status(500).json({ error: true, errorMsg: err.message });
+        }
+      });
+
+      archive.pipe(res);
+
+      for (const file of files) {
+        const stream = await getObjectStream(file.s3_key);
+        archive.append(stream, { name: file.zipPath });
+      }
+
+      await archive.finalize();
     } catch (err: any) {
       if (!res.headersSent) {
         return res.status(500).json({ error: true, errorMsg: err.message });
