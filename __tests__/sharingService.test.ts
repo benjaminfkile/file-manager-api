@@ -246,10 +246,13 @@ describe("shareFolder", () => {
 
 describe("getItemsSharedWithUser", () => {
   it("returns files and folders shared with the user", async () => {
+    const rawFile = { ...fakeFile, shared_by_username: "janedoe", shared_by_first_name: "Jane", shared_by_last_name: "Doe" };
+    const rawFolder = { ...fakeFolder, shared_by_username: "janedoe", shared_by_first_name: "Jane", shared_by_last_name: "Doe" };
+
     // First select() call returns shared files
-    mockQueryBuilder.select.mockResolvedValueOnce([fakeFile]);
+    mockQueryBuilder.select.mockResolvedValueOnce([rawFile]);
     // Second select() call returns shared folders
-    mockQueryBuilder.select.mockResolvedValueOnce([fakeFolder]);
+    mockQueryBuilder.select.mockResolvedValueOnce([rawFolder]);
 
     const result = await getItemsSharedWithUser("user-2");
 
@@ -270,8 +273,8 @@ describe("getItemsSharedWithUser", () => {
     );
 
     expect(result).toEqual({
-      files: [fakeFile],
-      folders: [fakeFolder],
+      files: [{ ...fakeFile, shared_by: { username: "janedoe", first_name: "Jane", last_name: "Doe" } }],
+      folders: [{ ...fakeFolder, shared_by: { username: "janedoe", first_name: "Jane", last_name: "Doe" } }],
     });
   });
 

@@ -19,8 +19,6 @@ async function start() {
     const appSecrets = await getAppSecrets();
     const dbSecrets = await getDBSecrets();
 
-    console.log("App secrets", appSecrets)
-
     app.set("secrets", appSecrets);
 
     initS3(appSecrets.S3_BUCKET_NAME);

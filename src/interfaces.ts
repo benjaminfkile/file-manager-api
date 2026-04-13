@@ -78,6 +78,21 @@ export interface IFolderShare {
   created_at: string;
 }
 
+// ---- Sharer info attached to shared items ----
+export interface ISharedByUser {
+  username: string;
+  first_name: string;
+  last_name: string;
+}
+
+export interface ISharedFile extends IFile {
+  shared_by: ISharedByUser;
+}
+
+export interface ISharedFolder extends IFolder {
+  shared_by: ISharedByUser;
+}
+
 // ---- DB health check result ----
 export interface IDBHealth {
   connected: boolean;
