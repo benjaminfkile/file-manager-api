@@ -3,8 +3,8 @@ import multer, { memoryStorage } from "multer";
 import { randomUUID } from "crypto";
 import { IAppSecrets, IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
-import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDeleteFile, restoreFile, hardDeleteFile, listRootFiles, moveFile } from "../services/fileService";
-import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject, getObjectStream, headObject } from "../aws/s3Service";
+import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDeleteFile, restoreFile, hardDeleteFile, listRootFiles, moveFile, createUploadSession } from "../services/fileService";
+import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject, getObjectStream, headObject, initiateMultipartUpload } from "../aws/s3Service";
 import { canAccessFile } from "../utils/accessControl";
 import { getDeletedFolderById, getFolderById } from "../services/folderService";
 import { shareFile, unshareFile, getFileSharesWithUsers } from "../services/sharingService";
@@ -96,6 +96,77 @@ filesRouter
       );
 
       return res.status(201).json({ file: record });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  });
+
+/**
+ * POST /api/files/uploads/initiate
+ * Initiate a multipart upload. Behind protectedRoute.
+ * Body: { filename, mimeType, size, folderId? }
+ */
+filesRouter
+  .route("/uploads/initiate")
+  .post(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { filename, mimeType, size, folderId } = req.body;
+
+      if (!filename || typeof filename !== "string" || filename.trim().length === 0) {
+        return res.status(400).json({
+          status: "error",
+          error: true,
+          errorMsg: "filename is required and must be a non-empty string",
+        });
+      }
+
+      if (!mimeType || typeof mimeType !== "string" || mimeType.trim().length === 0) {
+        return res.status(400).json({
+          status: "error",
+          error: true,
+          errorMsg: "mimeType is required and must be a non-empty string",
+        });
+      }
+
+      if (size == null || typeof size !== "number" || !Number.isInteger(size) || size < 1) {
+        return res.status(400).json({
+          status: "error",
+          error: true,
+          errorMsg: "size is required and must be a positive integer",
+        });
+      }
+
+      const secrets = req.app.get("secrets") as IAppSecrets;
+      const maxBytes = Number(secrets.MAX_UPLOAD_BYTES);
+      if (maxBytes >= 1 && size > maxBytes) {
+        return res.status(413).json({
+          status: "error",
+          error: true,
+          errorMsg: `File exceeds maximum upload size of ${maxBytes} bytes`,
+        });
+      }
+
+      const fileId = randomUUID();
+      const s3Key = buildS3Key(user.id, fileId, filename);
+      const s3UploadId = await initiateMultipartUpload(s3Key, mimeType);
+
+      await createUploadSession({
+        id: fileId,
+        userId: user.id,
+        s3Key,
+        s3UploadId,
+        filename,
+        mimeType,
+        sizeBytes: size,
+        folderId: folderId ?? null,
+      });
+
+      return res.status(201).json({ uploadId: s3UploadId, fileId, key: s3Key });
     } catch (error) {
       return res.status(500).json({
         status: "error",
