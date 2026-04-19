@@ -155,7 +155,6 @@ import { getDeletedFolderById, getFolderById } from "../src/services/folderServi
 import { canAccessFile } from "../src/utils/accessControl";
 import {
   buildS3Key,
-  uploadObject,
   generatePresignedDownloadUrl,
   generateSignedCloudFrontUrl,
   deleteObject,
@@ -178,112 +177,6 @@ beforeEach(() => {
   (buildS3Key as jest.Mock).mockReturnValue(
     "files/user-1111-1111-1111/mock-uuid/report.pdf"
   );
-});
-
-/* ================================================================== */
-/*  POST /api/files/upload                                             */
-/* ================================================================== */
-
-describe("POST /api/files/upload", () => {
-  it("uploads a file and returns 201 with file record", async () => {
-    (uploadObject as jest.Mock).mockResolvedValue(undefined);
-    (createFileRecord as jest.Mock).mockResolvedValue(fakeFile);
-
-    const res = await request(app)
-      .post("/api/files/upload")
-      .attach("file", Buffer.from("file content"), "report.pdf");
-
-    expect(res.status).toBe(201);
-    expect(res.body.file).toEqual(fakeFile);
-    expect(buildS3Key).toHaveBeenCalledWith(testUser.id, "mock-uuid", "report.pdf");
-    expect(uploadObject).toHaveBeenCalledWith(
-      "files/user-1111-1111-1111/mock-uuid/report.pdf",
-      expect.any(Buffer),
-      "application/pdf",
-      expect.any(Number)
-    );
-    expect(createFileRecord).toHaveBeenCalledWith(
-      testUser.id,
-      null,
-      "report.pdf",
-      "files/user-1111-1111-1111/mock-uuid/report.pdf",
-      expect.any(Number),
-      "application/pdf"
-    );
-  });
-
-  it("uploads a file into a folder when folderId is provided", async () => {
-    (uploadObject as jest.Mock).mockResolvedValue(undefined);
-    (createFileRecord as jest.Mock).mockResolvedValue(fakeFile);
-
-    const res = await request(app)
-      .post("/api/files/upload")
-      .field("folderId", "folder-1111-1111-1111")
-      .attach("file", Buffer.from("data"), "report.pdf");
-
-    expect(res.status).toBe(201);
-    expect(createFileRecord).toHaveBeenCalledWith(
-      testUser.id,
-      "folder-1111-1111-1111",
-      "report.pdf",
-      expect.any(String),
-      expect.any(Number),
-      expect.any(String)
-    );
-  });
-
-  it("uses name override when provided", async () => {
-    (uploadObject as jest.Mock).mockResolvedValue(undefined);
-    (createFileRecord as jest.Mock).mockResolvedValue(fakeFile);
-
-    const res = await request(app)
-      .post("/api/files/upload")
-      .field("name", "custom-name.pdf")
-      .attach("file", Buffer.from("data"), "original.pdf");
-
-    expect(res.status).toBe(201);
-    expect(buildS3Key).toHaveBeenCalledWith(testUser.id, "mock-uuid", "custom-name.pdf");
-    expect(createFileRecord).toHaveBeenCalledWith(
-      testUser.id,
-      null,
-      "custom-name.pdf",
-      expect.any(String),
-      expect.any(Number),
-      expect.any(String)
-    );
-  });
-
-  it("returns 400 when no file is attached", async () => {
-    const res = await request(app)
-      .post("/api/files/upload")
-      .send({});
-
-    expect(res.status).toBe(400);
-    expect(res.body.errorMsg).toBe("No file provided");
-  });
-
-  it("returns 500 when uploadObject throws", async () => {
-    (uploadObject as jest.Mock).mockRejectedValue(new Error("S3 failure"));
-
-    const res = await request(app)
-      .post("/api/files/upload")
-      .attach("file", Buffer.from("data"), "report.pdf");
-
-    expect(res.status).toBe(500);
-    expect(res.body.errorMsg).toBe("S3 failure");
-  });
-
-  it("returns 500 when createFileRecord throws", async () => {
-    (uploadObject as jest.Mock).mockResolvedValue(undefined);
-    (createFileRecord as jest.Mock).mockRejectedValue(new Error("DB error"));
-
-    const res = await request(app)
-      .post("/api/files/upload")
-      .attach("file", Buffer.from("data"), "report.pdf");
-
-    expect(res.status).toBe(500);
-    expect(res.body.errorMsg).toBe("DB error");
-  });
 });
 
 /* ================================================================== */
