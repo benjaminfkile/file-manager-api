@@ -5,6 +5,10 @@ import {
   DeleteObjectCommand,
   DeleteObjectsCommand,
   HeadObjectCommand,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createPrivateKey, createSign } from "crypto";
@@ -129,6 +133,69 @@ export async function headObject(
     contentLength: response.ContentLength ?? 0,
     contentType: response.ContentType ?? "application/octet-stream",
   };
+}
+
+/** Starts a multipart upload. Returns the S3 UploadId. */
+export async function initiateMultipartUpload(key: string, contentType: string): Promise<string> {
+  const response = await getClient().send(
+    new CreateMultipartUploadCommand({
+      Bucket: getBucket(),
+      Key: key,
+      ContentType: contentType,
+    })
+  );
+
+  if (!response.UploadId) {
+    throw new Error("S3 did not return an UploadId");
+  }
+
+  return response.UploadId;
+}
+
+/** Uploads one part. Returns the ETag string (include surrounding quotes — S3 returns them). */
+export async function uploadPart(key: string, uploadId: string, partNumber: number, body: Buffer): Promise<string> {
+  const response = await getClient().send(
+    new UploadPartCommand({
+      Bucket: getBucket(),
+      Key: key,
+      UploadId: uploadId,
+      PartNumber: partNumber,
+      Body: body,
+    })
+  );
+
+  if (!response.ETag) {
+    throw new Error("S3 did not return an ETag");
+  }
+
+  return response.ETag;
+}
+
+/** Finalises the multipart upload. parts must be sorted by PartNumber ascending. */
+export async function completeMultipartUpload(
+  key: string,
+  uploadId: string,
+  parts: { PartNumber: number; ETag: string }[]
+): Promise<void> {
+  await getClient().send(
+    new CompleteMultipartUploadCommand({
+      Bucket: getBucket(),
+      Key: key,
+      UploadId: uploadId,
+      MultipartUpload: { Parts: parts },
+    })
+  );
+}
+
+/** Aborts an in-progress upload and releases its staged S3 storage. */
+export async function abortMultipartUpload(key: string, uploadId: string): Promise<void> {
+  await getClient().send(
+    new AbortMultipartUploadCommand({
+      Bucket: getBucket(),
+      Key: key,
+      UploadId: uploadId,
+    })
+  );
 }
 
 export function generateSignedCloudFrontUrl(
