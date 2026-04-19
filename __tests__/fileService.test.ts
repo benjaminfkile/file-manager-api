@@ -1,4 +1,4 @@
-import { IFile } from "../src/interfaces";
+import { IFile, IUploadSession } from "../src/interfaces";
 
 /* ------------------------------------------------------------------ */
 /*  Mock the knex DB client                                           */
@@ -33,6 +33,9 @@ import {
   softDeleteFile,
   restoreFile,
   hardDeleteFile,
+  createUploadSession,
+  getUploadSession,
+  deleteUploadSession,
 } from "../src/services/fileService";
 
 /* ------------------------------------------------------------------ */
@@ -262,5 +265,96 @@ describe("hardDeleteFile", () => {
 
     expect(mockS3Delete).not.toHaveBeenCalled();
     expect(mockQueryBuilder.del).not.toHaveBeenCalled();
+  });
+});
+
+/* ================================================================== */
+/*  Upload Session helpers                                             */
+/* ================================================================== */
+
+const fakeSession: IUploadSession = {
+  id: "session-1",
+  user_id: "user-1",
+  s3_key: "uploads/user-1/session-1/photo.png",
+  s3_upload_id: "aws-upload-id-abc",
+  filename: "photo.png",
+  mime_type: "image/png",
+  size_bytes: 2048,
+  folder_id: null,
+  created_at: "2026-04-18T00:00:00.000Z",
+};
+
+/* ================================================================== */
+/*  createUploadSession                                                */
+/* ================================================================== */
+
+describe("createUploadSession", () => {
+  it("inserts an upload session row and returns it", async () => {
+    mockQueryBuilder.returning.mockResolvedValueOnce([fakeSession]);
+
+    const result = await createUploadSession({
+      id: "session-1",
+      userId: "user-1",
+      s3Key: "uploads/user-1/session-1/photo.png",
+      s3UploadId: "aws-upload-id-abc",
+      filename: "photo.png",
+      mimeType: "image/png",
+      sizeBytes: 2048,
+      folderId: null,
+    });
+
+    expect(mockDb).toHaveBeenCalledWith("upload_sessions");
+    expect(mockQueryBuilder.insert).toHaveBeenCalledWith({
+      id: "session-1",
+      user_id: "user-1",
+      s3_key: "uploads/user-1/session-1/photo.png",
+      s3_upload_id: "aws-upload-id-abc",
+      filename: "photo.png",
+      mime_type: "image/png",
+      size_bytes: 2048,
+      folder_id: null,
+    });
+    expect(mockQueryBuilder.returning).toHaveBeenCalledWith("*");
+    expect(result).toEqual(fakeSession);
+  });
+});
+
+/* ================================================================== */
+/*  getUploadSession                                                   */
+/* ================================================================== */
+
+describe("getUploadSession", () => {
+  it("returns the session when found", async () => {
+    mockQueryBuilder.first.mockResolvedValueOnce(fakeSession);
+
+    const result = await getUploadSession("session-1");
+
+    expect(mockDb).toHaveBeenCalledWith("upload_sessions");
+    expect(mockQueryBuilder.where).toHaveBeenCalledWith({ id: "session-1" });
+    expect(result).toEqual(fakeSession);
+  });
+
+  it("returns null when not found", async () => {
+    mockQueryBuilder.first.mockResolvedValueOnce(undefined);
+
+    const result = await getUploadSession("nonexistent");
+
+    expect(result).toBeNull();
+  });
+});
+
+/* ================================================================== */
+/*  deleteUploadSession                                                */
+/* ================================================================== */
+
+describe("deleteUploadSession", () => {
+  it("issues a delete query for the given id", async () => {
+    mockQueryBuilder.del.mockResolvedValueOnce(1);
+
+    await deleteUploadSession("session-1");
+
+    expect(mockDb).toHaveBeenCalledWith("upload_sessions");
+    expect(mockQueryBuilder.where).toHaveBeenCalledWith({ id: "session-1" });
+    expect(mockQueryBuilder.del).toHaveBeenCalledTimes(1);
   });
 });
