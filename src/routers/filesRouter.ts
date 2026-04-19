@@ -4,7 +4,7 @@ import { randomUUID } from "crypto";
 import { IAppSecrets, IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
 import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDeleteFile, restoreFile, hardDeleteFile, listRootFiles, moveFile, createUploadSession, getUploadSession, deleteUploadSession } from "../services/fileService";
-import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject, getObjectStream, headObject, initiateMultipartUpload, uploadPart, completeMultipartUpload } from "../aws/s3Service";
+import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject, getObjectStream, headObject, initiateMultipartUpload, uploadPart, completeMultipartUpload, abortMultipartUpload } from "../aws/s3Service";
 import { canAccessFile } from "../utils/accessControl";
 import { getDeletedFolderById, getFolderById } from "../services/folderService";
 import { shareFile, unshareFile, getFileSharesWithUsers } from "../services/sharingService";
@@ -305,6 +305,48 @@ filesRouter
       await deleteUploadSession(fileId);
 
       return res.status(201).json({ file: fileRecord });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  });
+
+/**
+ * DELETE /api/files/uploads/:fileId
+ * Abort a multipart upload. Behind protectedRoute.
+ * Aborts the S3 multipart upload and deletes the session row.
+ */
+filesRouter
+  .route("/uploads/:fileId")
+  .delete(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { fileId } = req.params;
+
+      const session = await getUploadSession(fileId);
+      if (!session) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "Upload session not found",
+        });
+      }
+
+      if (session.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Access denied",
+        });
+      }
+
+      await abortMultipartUpload(session.s3_key, session.s3_upload_id);
+      await deleteUploadSession(fileId);
+
+      return res.status(204).send();
     } catch (error) {
       return res.status(500).json({
         status: "error",
