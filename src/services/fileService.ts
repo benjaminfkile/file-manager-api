@@ -1,5 +1,5 @@
 import { getDb } from "../db/db";
-import { IFile } from "../interfaces";
+import { IFile, IUploadSession } from "../interfaces";
 
 const FILES = "files";
 
@@ -150,4 +150,52 @@ export async function hardDeleteFile(
 
   await s3DeleteFn(file.s3_key);
   await db(FILES).where({ id: fileId }).del();
+}
+
+/* ------------------------------------------------------------------ */
+/*  Upload Sessions                                                    */
+/* ------------------------------------------------------------------ */
+
+const UPLOAD_SESSIONS = "upload_sessions";
+
+/** Inserts a new upload session row and returns the created row. */
+export async function createUploadSession(data: {
+  id: string;
+  userId: string;
+  s3Key: string;
+  s3UploadId: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  folderId: string | null;
+}): Promise<IUploadSession> {
+  const db = getDb();
+  const [session] = await db(UPLOAD_SESSIONS)
+    .insert({
+      id: data.id,
+      user_id: data.userId,
+      s3_key: data.s3Key,
+      s3_upload_id: data.s3UploadId,
+      filename: data.filename,
+      mime_type: data.mimeType,
+      size_bytes: data.sizeBytes,
+      folder_id: data.folderId,
+    })
+    .returning("*");
+  return session;
+}
+
+/** Returns the session by its id, or null if not found. */
+export async function getUploadSession(sessionId: string): Promise<IUploadSession | null> {
+  const db = getDb();
+  const session = await db(UPLOAD_SESSIONS)
+    .where({ id: sessionId })
+    .first();
+  return session ?? null;
+}
+
+/** Deletes the session row. Called after complete or abort. */
+export async function deleteUploadSession(sessionId: string): Promise<void> {
+  const db = getDb();
+  await db(UPLOAD_SESSIONS).where({ id: sessionId }).del();
 }
