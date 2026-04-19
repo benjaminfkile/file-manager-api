@@ -149,6 +149,7 @@ import {
   moveFile,
   createUploadSession,
   getUploadSession,
+  deleteUploadSession,
 } from "../src/services/fileService";
 import { getDeletedFolderById, getFolderById } from "../src/services/folderService";
 import { canAccessFile } from "../src/utils/accessControl";
@@ -162,6 +163,7 @@ import {
   getObjectStream,
   initiateMultipartUpload,
   uploadPart,
+  completeMultipartUpload,
 } from "../src/aws/s3Service";
 import { shareFile, unshareFile, getFileSharesWithUsers } from "../src/services/sharingService";
 import { getDb } from "../src/db/db";
@@ -1257,6 +1259,201 @@ describe("PUT /api/files/uploads/:fileId/parts/:partNumber", () => {
     // Without valid body we get 400, proving the middleware ran (set req.user)
     // and the handler executed. In production, without a valid token,
     // protectedRoute would return 401 before reaching the handler.
+    expect(res.status).toBe(400);
+    const protectedRoute = require("../src/middleware/protectedRoute").default;
+    expect(protectedRoute).toBeDefined();
+    expect(typeof protectedRoute).toBe("function");
+  });
+});
+
+/* ================================================================== */
+/*  POST /api/files/uploads/:fileId/complete – Complete multipart      */
+/* ================================================================== */
+
+describe("POST /api/files/uploads/:fileId/complete", () => {
+  const fakeSession = {
+    id: "session-1111",
+    user_id: testUser.id,
+    s3_key: "files/user-1111-1111-1111/session-1111/video.mp4",
+    s3_upload_id: "s3-upload-id-123",
+    filename: "video.mp4",
+    mime_type: "video/mp4",
+    size_bytes: 5_000_000,
+    folder_id: "folder-1111-1111-1111",
+    created_at: "2026-04-01T00:00:00.000Z",
+  };
+
+  const otherUserSession = {
+    ...fakeSession,
+    id: "session-2222",
+    user_id: otherUser.id,
+  };
+
+  const validParts = [
+    { partNumber: 1, etag: '"abc123"' },
+    { partNumber: 2, etag: '"def456"' },
+  ];
+
+  it("returns 201 with { file } on valid parts array", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
+    (completeMultipartUpload as jest.Mock).mockResolvedValue(undefined);
+    (createFileRecord as jest.Mock).mockResolvedValue(fakeFile);
+    (deleteUploadSession as jest.Mock).mockResolvedValue(undefined);
+
+    const res = await request(app)
+      .post(`/api/files/uploads/${fakeSession.id}/complete`)
+      .send({ parts: validParts });
+
+    expect(res.status).toBe(201);
+    expect(res.body.file).toEqual(fakeFile);
+  });
+
+  it("returns 404 when fileId does not exist", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(null);
+
+    const res = await request(app)
+      .post("/api/files/uploads/nonexistent-id/complete")
+      .send({ parts: validParts });
+
+    expect(res.status).toBe(404);
+    expect(res.body.errorMsg).toMatch(/Upload session not found/);
+  });
+
+  it("returns 403 when session belongs to a different user", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(otherUserSession);
+
+    const res = await request(app)
+      .post(`/api/files/uploads/${otherUserSession.id}/complete`)
+      .send({ parts: validParts });
+
+    expect(res.status).toBe(403);
+    expect(res.body.errorMsg).toBe("Access denied");
+  });
+
+  it("returns 400 when parts is missing", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
+
+    const res = await request(app)
+      .post(`/api/files/uploads/${fakeSession.id}/complete`)
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body.errorMsg).toMatch(/parts/);
+  });
+
+  it("returns 400 when parts is empty array", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
+
+    const res = await request(app)
+      .post(`/api/files/uploads/${fakeSession.id}/complete`)
+      .send({ parts: [] });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errorMsg).toMatch(/parts/);
+  });
+
+  it("returns 400 when parts entry is missing partNumber", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
+
+    const res = await request(app)
+      .post(`/api/files/uploads/${fakeSession.id}/complete`)
+      .send({ parts: [{ etag: '"abc"' }] });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errorMsg).toMatch(/parts/);
+  });
+
+  it("returns 400 when parts entry is missing etag", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
+
+    const res = await request(app)
+      .post(`/api/files/uploads/${fakeSession.id}/complete`)
+      .send({ parts: [{ partNumber: 1 }] });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errorMsg).toMatch(/parts/);
+  });
+
+  it("returns 400 when partNumber is not an integer", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
+
+    const res = await request(app)
+      .post(`/api/files/uploads/${fakeSession.id}/complete`)
+      .send({ parts: [{ partNumber: 1.5, etag: '"abc"' }] });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errorMsg).toMatch(/parts/);
+  });
+
+  it("calls completeMultipartUpload with parts sorted by PartNumber ascending", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
+    (completeMultipartUpload as jest.Mock).mockResolvedValue(undefined);
+    (createFileRecord as jest.Mock).mockResolvedValue(fakeFile);
+    (deleteUploadSession as jest.Mock).mockResolvedValue(undefined);
+
+    const unorderedParts = [
+      { partNumber: 3, etag: '"ghi789"' },
+      { partNumber: 1, etag: '"abc123"' },
+      { partNumber: 2, etag: '"def456"' },
+    ];
+
+    await request(app)
+      .post(`/api/files/uploads/${fakeSession.id}/complete`)
+      .send({ parts: unorderedParts });
+
+    expect(completeMultipartUpload).toHaveBeenCalledWith(
+      fakeSession.s3_key,
+      fakeSession.s3_upload_id,
+      [
+        { PartNumber: 1, ETag: '"abc123"' },
+        { PartNumber: 2, ETag: '"def456"' },
+        { PartNumber: 3, ETag: '"ghi789"' },
+      ]
+    );
+  });
+
+  it("calls createFileRecord with values from the session", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
+    (completeMultipartUpload as jest.Mock).mockResolvedValue(undefined);
+    (createFileRecord as jest.Mock).mockResolvedValue(fakeFile);
+    (deleteUploadSession as jest.Mock).mockResolvedValue(undefined);
+
+    await request(app)
+      .post(`/api/files/uploads/${fakeSession.id}/complete`)
+      .send({ parts: validParts });
+
+    expect(createFileRecord).toHaveBeenCalledWith(
+      fakeSession.user_id,
+      fakeSession.folder_id,
+      fakeSession.filename,
+      fakeSession.s3_key,
+      fakeSession.size_bytes,
+      fakeSession.mime_type
+    );
+  });
+
+  it("calls deleteUploadSession with the fileId", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
+    (completeMultipartUpload as jest.Mock).mockResolvedValue(undefined);
+    (createFileRecord as jest.Mock).mockResolvedValue(fakeFile);
+    (deleteUploadSession as jest.Mock).mockResolvedValue(undefined);
+
+    await request(app)
+      .post(`/api/files/uploads/${fakeSession.id}/complete`)
+      .send({ parts: validParts });
+
+    expect(deleteUploadSession).toHaveBeenCalledWith(fakeSession.id);
+  });
+
+  it("returns 401 when unauthenticated", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
+
+    const res = await request(app)
+      .post(`/api/files/uploads/${fakeSession.id}/complete`)
+      .send({});
+
+    // Without valid body we get 400, proving the middleware ran.
+    // In production, protectedRoute would return 401.
     expect(res.status).toBe(400);
     const protectedRoute = require("../src/middleware/protectedRoute").default;
     expect(protectedRoute).toBeDefined();

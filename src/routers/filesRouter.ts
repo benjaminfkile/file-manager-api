@@ -3,8 +3,8 @@ import multer, { memoryStorage } from "multer";
 import { randomUUID } from "crypto";
 import { IAppSecrets, IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
-import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDeleteFile, restoreFile, hardDeleteFile, listRootFiles, moveFile, createUploadSession, getUploadSession } from "../services/fileService";
-import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject, getObjectStream, headObject, initiateMultipartUpload, uploadPart } from "../aws/s3Service";
+import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDeleteFile, restoreFile, hardDeleteFile, listRootFiles, moveFile, createUploadSession, getUploadSession, deleteUploadSession } from "../services/fileService";
+import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject, getObjectStream, headObject, initiateMultipartUpload, uploadPart, completeMultipartUpload } from "../aws/s3Service";
 import { canAccessFile } from "../utils/accessControl";
 import { getDeletedFolderById, getFolderById } from "../services/folderService";
 import { shareFile, unshareFile, getFileSharesWithUsers } from "../services/sharingService";
@@ -237,6 +237,82 @@ filesRouter
       }
     }
   );
+
+/**
+ * POST /api/files/uploads/:fileId/complete
+ * Complete a multipart upload. Behind protectedRoute.
+ * Body: { parts: [{ partNumber, etag }] }
+ */
+filesRouter
+  .route("/uploads/:fileId/complete")
+  .post(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { fileId } = req.params;
+
+      const session = await getUploadSession(fileId);
+      if (!session) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "Upload session not found",
+        });
+      }
+
+      if (session.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Access denied",
+        });
+      }
+
+      const { parts } = req.body;
+      if (
+        !Array.isArray(parts) ||
+        parts.length === 0 ||
+        !parts.every(
+          (p: any) =>
+            typeof p.partNumber === "number" &&
+            Number.isInteger(p.partNumber) &&
+            p.partNumber > 0 &&
+            typeof p.etag === "string" &&
+            p.etag.length > 0
+        )
+      ) {
+        return res.status(400).json({
+          status: "error",
+          error: true,
+          errorMsg: "parts must be a non-empty array with valid partNumber (positive integer) and etag (non-empty string)",
+        });
+      }
+
+      const sortedParts = [...parts]
+        .sort((a: any, b: any) => a.partNumber - b.partNumber)
+        .map((p: any) => ({ PartNumber: p.partNumber, ETag: p.etag }));
+
+      await completeMultipartUpload(session.s3_key, session.s3_upload_id, sortedParts);
+
+      const fileRecord = await createFileRecord(
+        session.user_id,
+        session.folder_id,
+        session.filename,
+        session.s3_key,
+        session.size_bytes,
+        session.mime_type
+      );
+
+      await deleteUploadSession(fileId);
+
+      return res.status(201).json({ file: fileRecord });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  });
 
 /**
  * GET /api/files/:id/download
