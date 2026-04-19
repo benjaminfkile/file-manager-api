@@ -104,6 +104,19 @@ export interface IShareLink {
   created_at: string;
 }
 
+// ---- Upload session record from the upload_sessions table ----
+export interface IUploadSession {
+  id: string;
+  user_id: string;
+  s3_key: string;
+  s3_upload_id: string;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  folder_id: string | null;
+  created_at: string;
+}
+
 // ---- DB health check result ----
 export interface IDBHealth {
   connected: boolean;
