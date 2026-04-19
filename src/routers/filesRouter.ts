@@ -3,8 +3,8 @@ import multer, { memoryStorage } from "multer";
 import { randomUUID } from "crypto";
 import { IAppSecrets, IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
-import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDeleteFile, restoreFile, hardDeleteFile, listRootFiles, moveFile, createUploadSession } from "../services/fileService";
-import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject, getObjectStream, headObject, initiateMultipartUpload } from "../aws/s3Service";
+import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDeleteFile, restoreFile, hardDeleteFile, listRootFiles, moveFile, createUploadSession, getUploadSession } from "../services/fileService";
+import { buildS3Key, uploadObject, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject, getObjectStream, headObject, initiateMultipartUpload, uploadPart } from "../aws/s3Service";
 import { canAccessFile } from "../utils/accessControl";
 import { getDeletedFolderById, getFolderById } from "../services/folderService";
 import { shareFile, unshareFile, getFileSharesWithUsers } from "../services/sharingService";
@@ -175,6 +175,68 @@ filesRouter
       });
     }
   });
+
+/**
+ * PUT /api/files/uploads/:fileId/parts/:partNumber
+ * Upload a single part of a multipart upload. Behind protectedRoute.
+ * Body: raw binary (application/octet-stream)
+ */
+filesRouter
+  .route("/uploads/:fileId/parts/:partNumber")
+  .put(
+    protectedRoute(),
+    express.raw({ type: "application/octet-stream", limit: "15mb" }),
+    async (req: Request, res: Response) => {
+      try {
+        const user = req.user as IUser;
+        const { fileId } = req.params;
+
+        const partNumber = parseInt(req.params.partNumber, 10);
+        if (isNaN(partNumber) || partNumber < 1 || partNumber > 10000) {
+          return res.status(400).json({
+            status: "error",
+            error: true,
+            errorMsg: "partNumber must be an integer between 1 and 10000",
+          });
+        }
+
+        if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+          return res.status(400).json({
+            status: "error",
+            error: true,
+            errorMsg: "Request body must be a non-empty binary buffer",
+          });
+        }
+
+        const session = await getUploadSession(fileId);
+        if (!session) {
+          return res.status(404).json({
+            status: "error",
+            error: true,
+            errorMsg: "Upload session not found",
+          });
+        }
+
+        if (session.user_id !== user.id) {
+          return res.status(403).json({
+            status: "error",
+            error: true,
+            errorMsg: "Access denied",
+          });
+        }
+
+        const etag = await uploadPart(session.s3_key, session.s3_upload_id, partNumber, req.body as Buffer);
+
+        return res.status(200).json({ partNumber, etag });
+      } catch (error) {
+        return res.status(500).json({
+          status: "error",
+          error: true,
+          errorMsg: (error as Error).message,
+        });
+      }
+    }
+  );
 
 /**
  * GET /api/files/:id/download
