@@ -1,4 +1,4 @@
-import express, { Request, Response } from "express";
+import express, { NextFunction, Request, Response } from "express";
 import { randomUUID } from "crypto";
 import { IAppSecrets, IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
@@ -10,6 +10,28 @@ import { shareFile, unshareFile, getFileSharesWithUsers } from "../services/shar
 import { getDb } from "../db/db";
 
 const filesRouter = express.Router();
+
+const DEFAULT_CLIENT_CHUNK_SIZE = 10 * 1024 * 1024;
+const MAX_PART_COUNT = 9500;
+const DEFAULT_MAX_FILE_BYTES = 5 * 1024 ** 4;
+const PART_BODY_LIMIT = "60mb";
+
+function rawPartBody(limit: string) {
+  const parser = express.raw({ type: "application/octet-stream", limit });
+  return (req: Request, res: Response, next: NextFunction) => {
+    parser(req, res, (err: any) => {
+      if (err && (err.status === 413 || err.statusCode === 413 || err.type === "entity.too.large")) {
+        return res.status(413).json({
+          status: "error",
+          error: true,
+          errorMsg: `Chunk exceeds maximum part size of ${limit}`,
+        });
+      }
+      if (err) return next(err);
+      next();
+    });
+  };
+}
 
 /**
  * GET /api/files
@@ -41,7 +63,7 @@ filesRouter
   .post(protectedRoute(), async (req: Request, res: Response) => {
     try {
       const user = req.user as IUser;
-      const { filename, mimeType, size, folderId } = req.body;
+      const { filename, mimeType, size, folderId, clientChunkSize } = req.body;
 
       if (!filename || typeof filename !== "string" || filename.trim().length === 0) {
         return res.status(400).json({
@@ -68,12 +90,39 @@ filesRouter
       }
 
       const secrets = req.app.get("secrets") as IAppSecrets;
-      const maxBytes = Number(secrets.MAX_UPLOAD_BYTES);
-      if (maxBytes >= 1 && size > maxBytes) {
+      const maxFileBytes =
+        secrets.MAX_FILE_BYTES != null && Number(secrets.MAX_FILE_BYTES) > 0
+          ? Number(secrets.MAX_FILE_BYTES)
+          : DEFAULT_MAX_FILE_BYTES;
+      if (size > maxFileBytes) {
         return res.status(413).json({
           status: "error",
           error: true,
-          errorMsg: `File exceeds maximum upload size of ${maxBytes} bytes`,
+          errorMsg: `File exceeds maximum size of ${maxFileBytes} bytes`,
+        });
+      }
+
+      let chunkSize = DEFAULT_CLIENT_CHUNK_SIZE;
+      if (clientChunkSize != null) {
+        if (
+          typeof clientChunkSize !== "number" ||
+          !Number.isInteger(clientChunkSize) ||
+          clientChunkSize < 1
+        ) {
+          return res.status(400).json({
+            status: "error",
+            error: true,
+            errorMsg: "clientChunkSize must be a positive integer",
+          });
+        }
+        chunkSize = clientChunkSize;
+      }
+      const expectedParts = Math.ceil(size / chunkSize);
+      if (expectedParts > MAX_PART_COUNT) {
+        return res.status(400).json({
+          status: "error",
+          error: true,
+          errorMsg: "File too large for client chunk size",
         });
       }
 
@@ -111,7 +160,7 @@ filesRouter
   .route("/uploads/:fileId/parts/:partNumber")
   .put(
     protectedRoute(),
-    express.raw({ type: "application/octet-stream", limit: "15mb" }),
+    rawPartBody(PART_BODY_LIMIT),
     async (req: Request, res: Response) => {
       try {
         const user = req.user as IUser;

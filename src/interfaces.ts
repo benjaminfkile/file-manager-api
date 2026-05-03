@@ -9,7 +9,8 @@ export interface IAppSecrets {
   CLOUDFRONT_DOMAIN?: string;
   CLOUDFRONT_KEY_PAIR_ID?: string;
   CLOUDFRONT_PRIVATE_KEY?: string;
-  MAX_UPLOAD_BYTES: string;
+  MAX_UPLOAD_BYTES?: string;
+  MAX_FILE_BYTES?: string;
   PREVIEW_URL_TTL?: string;
   COGNITO_USER_POOL_ID: string;
   COGNITO_CLIENT_ID: string;
