@@ -137,6 +137,7 @@ app.set("secrets", {
   DB_PROXY_URL: "",
   S3_BUCKET_NAME: "test-bucket",
   MAX_UPLOAD_BYTES: 10_485_760, // 10 MB
+  PREVIEW_URL_TTL: "900",
 });
 import {
   createFileRecord,
@@ -158,8 +159,6 @@ import {
   generatePresignedDownloadUrl,
   generateSignedCloudFrontUrl,
   deleteObject,
-  headObject,
-  getObjectStream,
   initiateMultipartUpload,
   uploadPart,
   completeMultipartUpload,
@@ -184,27 +183,45 @@ beforeEach(() => {
 /* ================================================================== */
 
 describe("GET /api/files/:id/download", () => {
-  it("returns 200 and streams file with correct headers", async () => {
-    const { Readable } = require("stream");
-    const contentBuffer = Buffer.from("file content");
+  it("returns 200 with { url, expiresAt } where url contains response-content-disposition", async () => {
+    const presignedUrl =
+      "https://s3.amazonaws.com/bucket/files/report.pdf" +
+      "?X-Amz-Algorithm=AWS4-HMAC-SHA256" +
+      "&response-content-disposition=" +
+      encodeURIComponent(`attachment; filename="report.pdf"; filename*=UTF-8''report.pdf`);
     (canAccessFile as jest.Mock).mockResolvedValue(true);
     (getFileById as jest.Mock).mockResolvedValue(fakeFile);
-    (headObject as jest.Mock).mockResolvedValue({
-      contentLength: contentBuffer.length,
-      contentType: fakeFile.mime_type,
-    });
-    (getObjectStream as jest.Mock).mockResolvedValue(
-      Readable.from([contentBuffer])
-    );
+    (generatePresignedDownloadUrl as jest.Mock).mockResolvedValue(presignedUrl);
 
     const res = await request(app).get(`/api/files/${fakeFile.id}/download`);
 
     expect(res.status).toBe(200);
-    expect(res.headers["content-type"]).toMatch(/application\/pdf/);
-    expect(res.headers["content-disposition"]).toMatch(/attachment/);
-    expect(res.headers["content-disposition"]).toMatch(/report\.pdf/);
-    expect(headObject).toHaveBeenCalledWith(fakeFile.s3_key);
-    expect(getObjectStream).toHaveBeenCalledWith(fakeFile.s3_key);
+    expect(res.body.url).toBe(presignedUrl);
+    expect(res.body.url).toMatch(/response-content-disposition=/);
+    expect(typeof res.body.expiresAt).toBe("string");
+    expect(generatePresignedDownloadUrl).toHaveBeenCalledWith(
+      fakeFile.s3_key,
+      900,
+      `attachment; filename="report.pdf"; filename*=UTF-8''report.pdf`
+    );
+  });
+
+  it("preserves RFC 5987 encoding for non-ASCII filenames", async () => {
+    const unicodeFile = { ...fakeFile, name: "résumé.pdf" };
+    (canAccessFile as jest.Mock).mockResolvedValue(true);
+    (getFileById as jest.Mock).mockResolvedValue(unicodeFile);
+    (generatePresignedDownloadUrl as jest.Mock).mockResolvedValue(
+      "https://s3.amazonaws.com/bucket/files/resume?response-content-disposition=x"
+    );
+
+    await request(app).get(`/api/files/${unicodeFile.id}/download`);
+
+    const expectedEncoded = encodeURIComponent("résumé.pdf").replace(/'/g, "%27");
+    expect(generatePresignedDownloadUrl).toHaveBeenCalledWith(
+      unicodeFile.s3_key,
+      900,
+      `attachment; filename="résumé.pdf"; filename*=UTF-8''${expectedEncoded}`
+    );
   });
 
   it("returns 404 when user has no access to file", async () => {
@@ -216,15 +233,17 @@ describe("GET /api/files/:id/download", () => {
     expect(res.body.errorMsg).toBe("File not found");
   });
 
-  it("returns 500 when headObject throws", async () => {
+  it("returns 500 when presigned URL generation fails", async () => {
     (canAccessFile as jest.Mock).mockResolvedValue(true);
     (getFileById as jest.Mock).mockResolvedValue(fakeFile);
-    (headObject as jest.Mock).mockRejectedValue(new Error("S3 head error"));
+    (generatePresignedDownloadUrl as jest.Mock).mockRejectedValue(
+      new Error("S3 presign error")
+    );
 
     const res = await request(app).get(`/api/files/${fakeFile.id}/download`);
 
     expect(res.status).toBe(500);
-    expect(res.body.errorMsg).toBe("S3 head error");
+    expect(res.body.errorMsg).toBe("S3 presign error");
   });
 });
 

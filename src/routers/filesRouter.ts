@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import { IAppSecrets, IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
 import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDeleteFile, restoreFile, hardDeleteFile, listRootFiles, moveFile, createUploadSession, getUploadSession, deleteUploadSession } from "../services/fileService";
-import { buildS3Key, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject, getObjectStream, headObject, initiateMultipartUpload, uploadPart, completeMultipartUpload, abortMultipartUpload } from "../aws/s3Service";
+import { buildS3Key, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject, initiateMultipartUpload, uploadPart, completeMultipartUpload, abortMultipartUpload } from "../aws/s3Service";
 import { canAccessFile } from "../utils/accessControl";
 import { getDeletedFolderById, getFolderById } from "../services/folderService";
 import { shareFile, unshareFile, getFileSharesWithUsers } from "../services/sharingService";
@@ -284,8 +284,8 @@ filesRouter
 
 /**
  * GET /api/files/:id/download
- * Stream the file from S3 directly to the client with Content-Disposition: attachment
- * so the browser always saves it rather than displaying it inline.
+ * Returns { url, expiresAt } where url is an S3 presigned URL that forces
+ * Content-Disposition: attachment so the browser saves the file.
  */
 filesRouter
   .route("/:id/download")
@@ -305,29 +305,28 @@ filesRouter
 
       const file = (await getFileById(fileId))!;
 
-      const { contentLength, contentType } = await headObject(file.s3_key);
-      const stream = await getObjectStream(file.s3_key);
-
       // RFC 5987 encoded filename so non-ASCII names survive the header
       const encodedName = encodeURIComponent(file.name).replace(/'/g, "%27");
       const safeName = file.name.replace(/"/g, '\\"');
+      const disposition = `attachment; filename="${safeName}"; filename*=UTF-8''${encodedName}`;
 
-      res.setHeader("Content-Type", contentType);
-      res.setHeader("Content-Length", contentLength);
-      res.setHeader(
-        "Content-Disposition",
-        `attachment; filename="${safeName}"; filename*=UTF-8''${encodedName}`
+      const secrets = req.app.get("secrets") as IAppSecrets;
+      const expiresIn = Number(secrets.PREVIEW_URL_TTL ?? 900);
+
+      const url = await generatePresignedDownloadUrl(
+        file.s3_key,
+        expiresIn,
+        disposition
       );
+      const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
 
-      stream.pipe(res);
+      return res.status(200).json({ url, expiresAt });
     } catch (error) {
-      if (!res.headersSent) {
-        return res.status(500).json({
-          status: "error",
-          error: true,
-          errorMsg: (error as Error).message,
-        });
-      }
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
     }
   });
 

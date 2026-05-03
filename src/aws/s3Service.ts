@@ -110,13 +110,17 @@ export async function deleteObjects(keys: string[]): Promise<void> {
 export async function generatePresignedDownloadUrl(
   key: string,
   expiresInSeconds: number,
-  responseContentDisposition?: string
+  responseContentDisposition?: string,
+  responseContentType?: string
 ): Promise<string> {
   const command = new GetObjectCommand({
     Bucket: getBucket(),
     Key: key,
     ...(responseContentDisposition
       ? { ResponseContentDisposition: responseContentDisposition }
+      : {}),
+    ...(responseContentType
+      ? { ResponseContentType: responseContentType }
       : {}),
   });
 

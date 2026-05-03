@@ -1,5 +1,5 @@
 import request from "supertest";
-import { IFolder, IShareLink, IUser, IZipJob } from "../src/interfaces";
+import { IFile, IFolder, IShareLink, IUser, IZipJob } from "../src/interfaces";
 
 /* ------------------------------------------------------------------ */
 /*  Module mocks that must be declared before app import               */
@@ -7,6 +7,7 @@ import { IFolder, IShareLink, IUser, IZipJob } from "../src/interfaces";
 
 jest.mock("uuid", () => ({ v4: () => "mock-uuid" }));
 
+jest.mock("../src/services/fileService");
 jest.mock("../src/services/folderService");
 jest.mock("../src/services/sharingService");
 jest.mock("../src/services/zipJobService");
@@ -17,6 +18,7 @@ jest.mock("../src/db/db", () => ({
 }));
 
 import app from "../src/app";
+import { getFileById } from "../src/services/fileService";
 import { getFolderById } from "../src/services/folderService";
 import {
   getShareLinkByToken,
@@ -96,6 +98,20 @@ const cacheHitJob: IZipJob = {
   error: null,
   created_at: "2026-05-03T00:00:00Z",
   completed_at: "2026-05-03T00:00:00Z",
+};
+
+const sharedFile: IFile = {
+  id: "file-xxxx",
+  user_id: ownerUser.id,
+  folder_id: null,
+  name: "report.pdf",
+  s3_key: `files/${ownerUser.id}/file-xxxx/report.pdf`,
+  size_bytes: 1024,
+  mime_type: "application/pdf",
+  is_deleted: false,
+  deleted_at: null,
+  created_at: "2026-01-01T00:00:00.000Z",
+  updated_at: "2026-01-01T00:00:00.000Z",
 };
 
 beforeEach(() => {
@@ -378,5 +394,107 @@ describe("GET /api/share-links/:token/folders/:folderId/download/status/:jobId",
 
     expect(res.status).toBe(404);
     expect(res.body.errorMsg).toBe("Zip job not found");
+  });
+});
+
+/* ================================================================== */
+/*  GET /api/share-links/:token/files/:fileId/download                 */
+/* ================================================================== */
+
+describe("GET /api/share-links/:token/files/:fileId/download", () => {
+  it("returns 200 with { url, expiresAt } where url contains response-content-disposition", async () => {
+    const presignedUrl =
+      "https://s3.amazonaws.com/bucket/files/report.pdf" +
+      "?X-Amz-Algorithm=AWS4-HMAC-SHA256" +
+      "&response-content-disposition=" +
+      encodeURIComponent(`attachment; filename="report.pdf"; filename*=UTF-8''report.pdf`);
+    (getShareLinkByToken as jest.Mock).mockResolvedValue(fileShareLink);
+    (getFileById as jest.Mock).mockResolvedValue(sharedFile);
+    (generatePresignedDownloadUrl as jest.Mock).mockResolvedValue(presignedUrl);
+
+    const res = await request(app).get(
+      `/api/share-links/${fileShareLink.token}/files/${sharedFile.id}/download`
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.url).toBe(presignedUrl);
+    expect(res.body.url).toMatch(/response-content-disposition=/);
+    expect(typeof res.body.expiresAt).toBe("string");
+    expect(generatePresignedDownloadUrl).toHaveBeenCalledWith(
+      sharedFile.s3_key,
+      900,
+      `attachment; filename="report.pdf"; filename*=UTF-8''report.pdf`
+    );
+  });
+
+  it("preserves RFC 5987 encoding for non-ASCII filenames", async () => {
+    const unicodeFile: IFile = { ...sharedFile, name: "résumé.pdf" };
+    (getShareLinkByToken as jest.Mock).mockResolvedValue(fileShareLink);
+    (getFileById as jest.Mock).mockResolvedValue(unicodeFile);
+    (generatePresignedDownloadUrl as jest.Mock).mockResolvedValue(
+      "https://s3.amazonaws.com/bucket/files/x?response-content-disposition=y"
+    );
+
+    await request(app).get(
+      `/api/share-links/${fileShareLink.token}/files/${unicodeFile.id}/download`
+    );
+
+    const expectedEncoded = encodeURIComponent("résumé.pdf").replace(/'/g, "%27");
+    expect(generatePresignedDownloadUrl).toHaveBeenCalledWith(
+      unicodeFile.s3_key,
+      900,
+      `attachment; filename="résumé.pdf"; filename*=UTF-8''${expectedEncoded}`
+    );
+  });
+
+  it("returns 404 when the share link is invalid", async () => {
+    (getShareLinkByToken as jest.Mock).mockResolvedValue(null);
+
+    const res = await request(app).get(
+      `/api/share-links/bogus/files/${sharedFile.id}/download`
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body.errorMsg).toMatch(/Share link not found/);
+  });
+
+  it("returns 404 when the file is missing or deleted", async () => {
+    (getShareLinkByToken as jest.Mock).mockResolvedValue(fileShareLink);
+    (getFileById as jest.Mock).mockResolvedValue(null);
+
+    const res = await request(app).get(
+      `/api/share-links/${fileShareLink.token}/files/${sharedFile.id}/download`
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body.errorMsg).toBe("File not found");
+  });
+
+  it("returns 403 when the file is not reachable via the share link", async () => {
+    const otherFile: IFile = { ...sharedFile, id: "file-other" };
+    (getShareLinkByToken as jest.Mock).mockResolvedValue(fileShareLink);
+    (getFileById as jest.Mock).mockResolvedValue(otherFile);
+
+    const res = await request(app).get(
+      `/api/share-links/${fileShareLink.token}/files/${otherFile.id}/download`
+    );
+
+    expect(res.status).toBe(403);
+    expect(res.body.errorMsg).toMatch(/not accessible/);
+  });
+
+  it("returns 500 when presigned URL generation fails", async () => {
+    (getShareLinkByToken as jest.Mock).mockResolvedValue(fileShareLink);
+    (getFileById as jest.Mock).mockResolvedValue(sharedFile);
+    (generatePresignedDownloadUrl as jest.Mock).mockRejectedValue(
+      new Error("S3 presign error")
+    );
+
+    const res = await request(app).get(
+      `/api/share-links/${fileShareLink.token}/files/${sharedFile.id}/download`
+    );
+
+    expect(res.status).toBe(500);
+    expect(res.body.errorMsg).toBe("S3 presign error");
   });
 });
