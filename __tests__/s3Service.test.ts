@@ -23,7 +23,6 @@ import {
   completeMultipartUpload,
   abortMultipartUpload,
   listUploadedParts,
-  ensureZipCacheLifecycleRule,
 } from "../src/aws/s3Service";
 
 import {
@@ -32,8 +31,6 @@ import {
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
   ListPartsCommand,
-  GetBucketLifecycleConfigurationCommand,
-  PutBucketLifecycleConfigurationCommand,
 } from "@aws-sdk/client-s3";
 
 /* ------------------------------------------------------------------ */
@@ -184,85 +181,6 @@ describe("listUploadedParts", () => {
 
     expect(result).toEqual([]);
     expect(mockSend).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("ensureZipCacheLifecycleRule", () => {
-  it("is a noop when a rule with ID 'expire-zip-cache' already exists", async () => {
-    mockSend.mockResolvedValueOnce({
-      Rules: [
-        {
-          ID: "expire-zip-cache",
-          Status: "Enabled",
-          Filter: { Prefix: "zip-cache/" },
-          Expiration: { Days: 7 },
-        },
-      ],
-    });
-
-    await ensureZipCacheLifecycleRule();
-
-    expect(mockSend).toHaveBeenCalledTimes(1);
-    expect(mockSend.mock.calls[0][0]).toBeInstanceOf(
-      GetBucketLifecycleConfigurationCommand
-    );
-  });
-
-  it("puts the rule when no lifecycle configuration exists, preserving an empty rule list", async () => {
-    const noSuchConfig: any = new Error("No lifecycle configuration");
-    noSuchConfig.name = "NoSuchLifecycleConfiguration";
-    mockSend.mockRejectedValueOnce(noSuchConfig);
-    mockSend.mockResolvedValueOnce({});
-
-    await ensureZipCacheLifecycleRule();
-
-    expect(mockSend).toHaveBeenCalledTimes(2);
-    expect(mockSend.mock.calls[0][0]).toBeInstanceOf(
-      GetBucketLifecycleConfigurationCommand
-    );
-
-    const putCommand = mockSend.mock.calls[1][0];
-    expect(putCommand).toBeInstanceOf(PutBucketLifecycleConfigurationCommand);
-    expect(putCommand.input).toEqual({
-      Bucket: "test-bucket",
-      LifecycleConfiguration: {
-        Rules: [
-          {
-            ID: "expire-zip-cache",
-            Status: "Enabled",
-            Filter: { Prefix: "zip-cache/" },
-            Expiration: { Days: 7 },
-          },
-        ],
-      },
-    });
-  });
-
-  it("merges with existing rules when the zip-cache rule is absent", async () => {
-    const existingRule = {
-      ID: "archive-old-files",
-      Status: "Enabled",
-      Filter: { Prefix: "archive/" },
-      Expiration: { Days: 365 },
-    };
-    mockSend.mockResolvedValueOnce({ Rules: [existingRule] });
-    mockSend.mockResolvedValueOnce({});
-
-    await ensureZipCacheLifecycleRule();
-
-    expect(mockSend).toHaveBeenCalledTimes(2);
-    const putCommand = mockSend.mock.calls[1][0];
-    expect(putCommand).toBeInstanceOf(PutBucketLifecycleConfigurationCommand);
-    expect(putCommand.input.Bucket).toBe("test-bucket");
-    expect(putCommand.input.LifecycleConfiguration.Rules).toEqual([
-      existingRule,
-      {
-        ID: "expire-zip-cache",
-        Status: "Enabled",
-        Filter: { Prefix: "zip-cache/" },
-        Expiration: { Days: 7 },
-      },
-    ]);
   });
 });
 

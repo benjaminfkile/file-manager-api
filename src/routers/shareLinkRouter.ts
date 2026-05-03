@@ -9,12 +9,11 @@ import {
 } from "../services/sharingService";
 import { getFileById } from "../services/fileService";
 import { getFolderById, listFolderContents } from "../services/folderService";
-import { getOrCreateZipJob } from "../services/zipJobService";
 import {
   generatePresignedDownloadUrl,
   generateSignedCloudFrontUrl,
 } from "../aws/s3Service";
-import { respondWithZipJobStatus } from "./foldersRouter";
+import { buildDownloadManifest } from "../utils/downloadManifest";
 import { IAppSecrets, IShareLink, IUser } from "../interfaces";
 
 const shareLinkRouter = express.Router();
@@ -341,17 +340,22 @@ shareLinkRouter
   });
 
 // ---------------------------------------------------------------------------
-// Public: prepare/poll a folder ZIP job via share link
+// Public: download manifest for a folder via share link
 // ---------------------------------------------------------------------------
 
 /**
  * Validate that the share link exists, points to a folder, and that the
  * provided folderId is the shared folder itself or a descendant of it.
+ * Returns the resolved folder so callers don't need to fetch it again.
  */
 async function resolveFolderShareLink(
   req: Request,
   res: Response
-): Promise<{ link: IShareLink; folderId: string } | null> {
+): Promise<{
+  link: IShareLink;
+  folderId: string;
+  folder: { id: string; name: string };
+} | null> {
   const link = await getShareLinkByToken(req.params.token);
   if (!link) {
     res
@@ -382,45 +386,29 @@ async function resolveFolderShareLink(
     return null;
   }
 
-  return { link, folderId };
+  return { link, folderId, folder };
 }
 
 /**
- * GET /api/share-links/:token/folders/:folderId/download/prepare
- * Public. Validates the folder is the share-link target or descendant.
+ * GET /api/share-links/:token/folders/:folderId/download-manifest
+ *
+ * Public. Returns the same manifest shape as the protected endpoint so the
+ * client-side streaming-zip code path can be reused for share links.
  */
 shareLinkRouter
-  .route("/:token/folders/:folderId/download/prepare")
+  .route("/:token/folders/:folderId/download-manifest")
   .get(async (req: Request, res: Response) => {
     try {
       const resolved = await resolveFolderShareLink(req, res);
       if (!resolved) return;
 
-      const job = await getOrCreateZipJob(resolved.link.owner_user_id, resolved.folderId);
-      return res.status(200).json({ jobId: job.id, status: job.status });
-    } catch (err: any) {
-      return res.status(500).json({ error: true, errorMsg: err.message });
-    }
-  });
-
-/**
- * GET /api/share-links/:token/folders/:folderId/download/status/:jobId
- * Public. Resolves a zip-job's status; returns a signed URL when ready.
- */
-shareLinkRouter
-  .route("/:token/folders/:folderId/download/status/:jobId")
-  .get(async (req: Request, res: Response) => {
-    try {
-      const resolved = await resolveFolderShareLink(req, res);
-      if (!resolved) return;
-
-      return await respondWithZipJobStatus(
-        req,
-        res,
-        req.params.jobId,
-        resolved.link.owner_user_id,
-        resolved.folderId
+      const secrets = req.app.get("secrets") as IAppSecrets;
+      const manifest = await buildDownloadManifest(
+        resolved.folder.name,
+        resolved.folderId,
+        secrets
       );
+      return res.status(200).json(manifest);
     } catch (err: any) {
       return res.status(500).json({ error: true, errorMsg: err.message });
     }

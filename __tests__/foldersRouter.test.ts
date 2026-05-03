@@ -1,5 +1,5 @@
 import request from "supertest";
-import { IFolder, IUser, IZipJob } from "../src/interfaces";
+import { IFolder, IUser } from "../src/interfaces";
 
 /* ------------------------------------------------------------------ */
 /*  Module mocks that must be declared before app import               */
@@ -112,7 +112,6 @@ jest.mock("../src/middleware/protectedRoute", () => {
 
 jest.mock("../src/services/folderService");
 jest.mock("../src/services/sharingService");
-jest.mock("../src/services/zipJobService");
 jest.mock("../src/utils/accessControl");
 jest.mock("../src/aws/s3Service");
 jest.mock("../src/db/db", () => ({
@@ -131,6 +130,7 @@ jest.mock("../src/db/db", () => ({
 
 import app from "../src/app";
 import {
+  collectFolderFiles,
   createFolder,
   getFolderById,
   listRootFolders,
@@ -143,12 +143,8 @@ import {
   getDeletedFolderById,
 } from "../src/services/folderService";
 import { shareFolder, unshareFolder, getFolderShares } from "../src/services/sharingService";
-import { getOrCreateZipJob } from "../src/services/zipJobService";
 import { canAccessFolder } from "../src/utils/accessControl";
-import {
-  generatePresignedDownloadUrl,
-  generateSignedCloudFrontUrl,
-} from "../src/aws/s3Service";
+import { generatePresignedDownloadUrl } from "../src/aws/s3Service";
 import { getDb } from "../src/db/db";
 
 /* ------------------------------------------------------------------ */
@@ -551,86 +547,10 @@ describe("DELETE /api/folders/:id/permanent", () => {
 });
 
 /* ================================================================== */
-/*  POST /api/folders/:id/download/prepare                            */
-/*  GET  /api/folders/:id/download/status/:jobId                      */
+/*  GET /api/folders/:id/download-manifest                            */
 /* ================================================================== */
 
-const pendingJob: IZipJob = {
-  id: "job-pending-1",
-  user_id: testUser.id,
-  folder_id: rootFolder.id,
-  zip_hash: "deadbeef",
-  s3_key: "zip-cache/user-1111-1111-1111/deadbeef.zip",
-  status: "pending",
-  error: null,
-  created_at: "2026-05-03T00:00:00Z",
-  completed_at: null,
-};
-
-const cacheHitJob: IZipJob = {
-  id: "cache-cafef00d",
-  user_id: testUser.id,
-  folder_id: rootFolder.id,
-  zip_hash: "cafef00d",
-  s3_key: "zip-cache/user-1111-1111-1111/cafef00d.zip",
-  status: "ready",
-  error: null,
-  created_at: "2026-05-03T00:00:00Z",
-  completed_at: "2026-05-03T00:00:00Z",
-};
-
-describe("POST /api/folders/:id/download/prepare", () => {
-  it("returns 200 { jobId, status: 'pending' } on cache miss", async () => {
-    (canAccessFolder as jest.Mock).mockResolvedValue(true);
-    (getOrCreateZipJob as jest.Mock).mockResolvedValue(pendingJob);
-
-    const res = await request(app).post(
-      `/api/folders/${rootFolder.id}/download/prepare`
-    );
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ jobId: pendingJob.id, status: "pending" });
-    expect(getOrCreateZipJob).toHaveBeenCalledWith(testUser.id, rootFolder.id);
-  });
-
-  it("returns 200 { jobId, status: 'ready' } on cache hit", async () => {
-    (canAccessFolder as jest.Mock).mockResolvedValue(true);
-    (getOrCreateZipJob as jest.Mock).mockResolvedValue(cacheHitJob);
-
-    const res = await request(app).post(
-      `/api/folders/${rootFolder.id}/download/prepare`
-    );
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ jobId: cacheHitJob.id, status: "ready" });
-  });
-
-  it("returns 404 when user has no access", async () => {
-    (canAccessFolder as jest.Mock).mockResolvedValue(false);
-
-    const res = await request(app).post(
-      `/api/folders/${rootFolder.id}/download/prepare`
-    );
-
-    expect(res.status).toBe(404);
-    expect(res.body.errorMsg).toBe("Folder not found");
-    expect(getOrCreateZipJob).not.toHaveBeenCalled();
-  });
-
-  it("returns 500 when getOrCreateZipJob throws", async () => {
-    (canAccessFolder as jest.Mock).mockResolvedValue(true);
-    (getOrCreateZipJob as jest.Mock).mockRejectedValue(new Error("kaboom"));
-
-    const res = await request(app).post(
-      `/api/folders/${rootFolder.id}/download/prepare`
-    );
-
-    expect(res.status).toBe(500);
-    expect(res.body.errorMsg).toBe("kaboom");
-  });
-});
-
-describe("GET /api/folders/:id/download/status/:jobId", () => {
+describe("GET /api/folders/:id/download-manifest", () => {
   beforeEach(() => {
     app.set("secrets", {
       NODE_ENV: "development",
@@ -644,185 +564,77 @@ describe("GET /api/folders/:id/download/status/:jobId", () => {
     });
   });
 
-  it("returns { status: 'pending' } when job is still running", async () => {
+  it("returns the manifest with one signed URL per file in the folder tree", async () => {
     (canAccessFolder as jest.Mock).mockResolvedValue(true);
-    const dbInstance = jest.fn().mockReturnValue({
-      where: jest.fn().mockReturnValue({
-        first: jest.fn().mockResolvedValue(pendingJob),
-      }),
-    });
-    (getDb as jest.Mock).mockReturnValue(dbInstance);
-
-    const res = await request(app).get(
-      `/api/folders/${rootFolder.id}/download/status/${pendingJob.id}`
-    );
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: "pending" });
-  });
-
-  it("returns S3 presigned URL when job is ready and CloudFront is unconfigured", async () => {
-    (canAccessFolder as jest.Mock).mockResolvedValue(true);
-    const readyJob: IZipJob = { ...pendingJob, status: "ready", completed_at: "2026-05-03T00:00:01Z" };
-    const dbInstance = jest.fn().mockReturnValue({
-      where: jest.fn().mockReturnValue({
-        first: jest.fn().mockResolvedValue(readyJob),
-      }),
-    });
-    (getDb as jest.Mock).mockReturnValue(dbInstance);
     (getFolderById as jest.Mock).mockResolvedValue(rootFolder);
-    (generatePresignedDownloadUrl as jest.Mock).mockResolvedValue(
-      "https://s3.example/presigned"
+    (collectFolderFiles as jest.Mock).mockResolvedValue([
+      { s3_key: "files/u/a/movie.mp4", zipPath: "movies/movie.mp4", size_bytes: 1_288_490_189 },
+      { s3_key: "files/u/b/notes.txt", zipPath: "notes.txt", size_bytes: 42 },
+    ]);
+    (generatePresignedDownloadUrl as jest.Mock).mockImplementation(
+      async (key: string) => `https://s3.example/${key}?sig=x`
     );
 
     const res = await request(app).get(
-      `/api/folders/${rootFolder.id}/download/status/${readyJob.id}`
+      `/api/folders/${rootFolder.id}/download-manifest`
     );
 
     expect(res.status).toBe(200);
-    expect(res.body.status).toBe("ready");
-    expect(res.body.url).toBe("https://s3.example/presigned");
+    expect(res.body.folderName).toBe(rootFolder.name);
+    expect(res.body.totalBytes).toBe(1_288_490_189 + 42);
     expect(typeof res.body.expiresAt).toBe("string");
-    expect(generatePresignedDownloadUrl).toHaveBeenCalledWith(
-      readyJob.s3_key,
-      900,
-      `attachment; filename="${rootFolder.name}.zip"`
-    );
-    expect(generateSignedCloudFrontUrl).not.toHaveBeenCalled();
+    expect(res.body.files).toEqual([
+      {
+        zipPath: `${rootFolder.name}/movies/movie.mp4`,
+        url: "https://s3.example/files/u/a/movie.mp4?sig=x",
+        size: 1_288_490_189,
+      },
+      {
+        zipPath: `${rootFolder.name}/notes.txt`,
+        url: "https://s3.example/files/u/b/notes.txt?sig=x",
+        size: 42,
+      },
+    ]);
   });
 
-  it("returns CloudFront signed URL when CloudFront is configured", async () => {
-    app.set("secrets", {
-      NODE_ENV: "development",
-      PORT: "3000",
-      DB_NAME: "testdb",
-      DB_HOST: "localhost",
-      DB_PROXY_URL: "",
-      S3_BUCKET_NAME: "test-bucket",
-      MAX_UPLOAD_BYTES: "10485760",
-      PREVIEW_URL_TTL: "900",
-      CLOUDFRONT_DOMAIN: "cdn.example",
-      CLOUDFRONT_KEY_PAIR_ID: "KP123",
-      CLOUDFRONT_PRIVATE_KEY: "PEMKEY",
-    });
-
+  it("returns an empty file list for an empty folder", async () => {
     (canAccessFolder as jest.Mock).mockResolvedValue(true);
-    const readyJob: IZipJob = { ...pendingJob, status: "ready" };
-    const dbInstance = jest.fn().mockReturnValue({
-      where: jest.fn().mockReturnValue({
-        first: jest.fn().mockResolvedValue(readyJob),
-      }),
-    });
-    (getDb as jest.Mock).mockReturnValue(dbInstance);
     (getFolderById as jest.Mock).mockResolvedValue(rootFolder);
-    (generateSignedCloudFrontUrl as jest.Mock).mockReturnValue(
-      "https://cdn.example/signed"
-    );
+    (collectFolderFiles as jest.Mock).mockResolvedValue([]);
 
     const res = await request(app).get(
-      `/api/folders/${rootFolder.id}/download/status/${readyJob.id}`
+      `/api/folders/${rootFolder.id}/download-manifest`
     );
 
     expect(res.status).toBe(200);
-    expect(res.body.status).toBe("ready");
-    expect(res.body.url).toBe("https://cdn.example/signed");
-    expect(generateSignedCloudFrontUrl).toHaveBeenCalledWith(
-      "cdn.example",
-      readyJob.s3_key,
-      "KP123",
-      "PEMKEY",
-      900
-    );
+    expect(res.body.files).toEqual([]);
+    expect(res.body.totalBytes).toBe(0);
     expect(generatePresignedDownloadUrl).not.toHaveBeenCalled();
-  });
-
-  it("resolves cache-* jobIds without a DB lookup and returns ready", async () => {
-    (canAccessFolder as jest.Mock).mockResolvedValue(true);
-    (getFolderById as jest.Mock).mockResolvedValue(rootFolder);
-    (generatePresignedDownloadUrl as jest.Mock).mockResolvedValue(
-      "https://s3.example/cache-presigned"
-    );
-
-    const res = await request(app).get(
-      `/api/folders/${rootFolder.id}/download/status/${cacheHitJob.id}`
-    );
-
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe("ready");
-    expect(res.body.url).toBe("https://s3.example/cache-presigned");
-    expect(generatePresignedDownloadUrl).toHaveBeenCalledWith(
-      `zip-cache/${testUser.id}/cafef00d.zip`,
-      900,
-      `attachment; filename="${rootFolder.name}.zip"`
-    );
-  });
-
-  it("returns { status: 'failed', error } when the job has failed", async () => {
-    (canAccessFolder as jest.Mock).mockResolvedValue(true);
-    const failedJob: IZipJob = {
-      ...pendingJob,
-      status: "failed",
-      error: "s3 boom",
-    };
-    const dbInstance = jest.fn().mockReturnValue({
-      where: jest.fn().mockReturnValue({
-        first: jest.fn().mockResolvedValue(failedJob),
-      }),
-    });
-    (getDb as jest.Mock).mockReturnValue(dbInstance);
-
-    const res = await request(app).get(
-      `/api/folders/${rootFolder.id}/download/status/${failedJob.id}`
-    );
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: "failed", error: "s3 boom" });
   });
 
   it("returns 404 when the user has no access to the folder", async () => {
     (canAccessFolder as jest.Mock).mockResolvedValue(false);
 
     const res = await request(app).get(
-      `/api/folders/${rootFolder.id}/download/status/${pendingJob.id}`
+      `/api/folders/${rootFolder.id}/download-manifest`
     );
 
     expect(res.status).toBe(404);
     expect(res.body.errorMsg).toBe("Folder not found");
+    expect(collectFolderFiles).not.toHaveBeenCalled();
   });
 
-  it("returns 404 when the jobId belongs to a different user", async () => {
+  it("returns 500 when collectFolderFiles throws", async () => {
     (canAccessFolder as jest.Mock).mockResolvedValue(true);
-    const otherJob: IZipJob = { ...pendingJob, user_id: otherUser.id };
-    const dbInstance = jest.fn().mockReturnValue({
-      where: jest.fn().mockReturnValue({
-        first: jest.fn().mockResolvedValue(otherJob),
-      }),
-    });
-    (getDb as jest.Mock).mockReturnValue(dbInstance);
+    (getFolderById as jest.Mock).mockResolvedValue(rootFolder);
+    (collectFolderFiles as jest.Mock).mockRejectedValue(new Error("db boom"));
 
     const res = await request(app).get(
-      `/api/folders/${rootFolder.id}/download/status/${otherJob.id}`
+      `/api/folders/${rootFolder.id}/download-manifest`
     );
 
-    expect(res.status).toBe(404);
-    expect(res.body.errorMsg).toBe("Zip job not found");
-  });
-
-  it("returns 404 when the jobId is missing entirely", async () => {
-    (canAccessFolder as jest.Mock).mockResolvedValue(true);
-    const dbInstance = jest.fn().mockReturnValue({
-      where: jest.fn().mockReturnValue({
-        first: jest.fn().mockResolvedValue(undefined),
-      }),
-    });
-    (getDb as jest.Mock).mockReturnValue(dbInstance);
-
-    const res = await request(app).get(
-      `/api/folders/${rootFolder.id}/download/status/missing-job`
-    );
-
-    expect(res.status).toBe(404);
-    expect(res.body.errorMsg).toBe("Zip job not found");
+    expect(res.status).toBe(500);
+    expect(res.body.errorMsg).toBe("db boom");
   });
 });
 

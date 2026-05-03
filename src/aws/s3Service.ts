@@ -10,9 +10,6 @@ import {
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
   ListPartsCommand,
-  GetBucketLifecycleConfigurationCommand,
-  PutBucketLifecycleConfigurationCommand,
-  type LifecycleRule,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createPrivateKey, createSign } from "crypto";
@@ -72,21 +69,6 @@ export async function uploadObject(
       ContentLength: size,
     })
   );
-}
-
-export async function getObjectStream(key: string): Promise<Readable> {
-  const response = await getClient().send(
-    new GetObjectCommand({
-      Bucket: getBucket(),
-      Key: key,
-    })
-  );
-
-  if (!response.Body) {
-    throw new Error(`S3 object body is empty for key: ${key}`);
-  }
-
-  return response.Body as Readable;
 }
 
 export async function deleteObject(key: string): Promise<void> {
@@ -258,64 +240,6 @@ export function getS3Client(): S3Client {
 
 export function getBucketName(): string {
   return getBucket();
-}
-
-export async function s3KeyExists(key: string): Promise<boolean> {
-  try {
-    await getClient().send(
-      new HeadObjectCommand({ Bucket: getBucket(), Key: key })
-    );
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export const ZIP_CACHE_LIFECYCLE_RULE_ID = "expire-zip-cache";
-
-/**
- * Ensures the bucket has a lifecycle rule that expires `zip-cache/*` objects
- * after 7 days. Idempotent: if a rule with ID `expire-zip-cache` already
- * exists, returns without making changes. Otherwise merges the rule into the
- * existing configuration (preserving any other rules) via PutBucketLifecycleConfiguration.
- */
-export async function ensureZipCacheLifecycleRule(): Promise<void> {
-  const client = getClient();
-  const bucketName = getBucket();
-
-  const desiredRule: LifecycleRule = {
-    ID: ZIP_CACHE_LIFECYCLE_RULE_ID,
-    Status: "Enabled",
-    Filter: { Prefix: "zip-cache/" },
-    Expiration: { Days: 7 },
-  };
-
-  let existingRules: LifecycleRule[] = [];
-  try {
-    const response = await client.send(
-      new GetBucketLifecycleConfigurationCommand({ Bucket: bucketName })
-    );
-    existingRules = response.Rules ?? [];
-  } catch (err: any) {
-    // S3 returns NoSuchLifecycleConfiguration when no config exists yet — treat as empty.
-    const code = err?.name ?? err?.Code;
-    if (code !== "NoSuchLifecycleConfiguration") {
-      throw err;
-    }
-  }
-
-  if (existingRules.some((r) => r.ID === ZIP_CACHE_LIFECYCLE_RULE_ID)) {
-    return;
-  }
-
-  const mergedRules = [...existingRules, desiredRule];
-
-  await client.send(
-    new PutBucketLifecycleConfigurationCommand({
-      Bucket: bucketName,
-      LifecycleConfiguration: { Rules: mergedRules },
-    })
-  );
 }
 
 export function generateSignedCloudFrontUrl(

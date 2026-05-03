@@ -1,12 +1,23 @@
 import express, { Request, Response } from "express";
-import { IAppSecrets, IUser, IZipJob } from "../interfaces";
+import { IAppSecrets, IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
-import { createFolder, getDeletedFolderById, getFolderById, hardDeleteFolder, listFolderContents, listRootFolders, moveFolder, renameFolder, restoreFolder, softDeleteFolder } from "../services/folderService";
+import {
+  createFolder,
+  getDeletedFolderById,
+  getFolderById,
+  hardDeleteFolder,
+  listFolderContents,
+  listRootFolders,
+  moveFolder,
+  renameFolder,
+  restoreFolder,
+  softDeleteFolder,
+} from "../services/folderService";
 import { shareFolder, unshareFolder, getFolderShares } from "../services/sharingService";
-import { getOrCreateZipJob } from "../services/zipJobService";
 import { getDb } from "../db/db";
-import { deleteObjects, generatePresignedDownloadUrl, generateSignedCloudFrontUrl } from "../aws/s3Service";
+import { deleteObjects } from "../aws/s3Service";
 import { canAccessFolder } from "../utils/accessControl";
+import { buildDownloadManifest } from "../utils/downloadManifest";
 
 const foldersRouter = express.Router();
 
@@ -258,13 +269,23 @@ foldersRouter
   });
 
 /**
- * POST /api/folders/:id/download/prepare
- * Kicks off (or returns a cached) zip-job for the folder.
- * Returns 200 { jobId, status }.
+ * GET /api/folders/:id/download-manifest
+ *
+ * Returns metadata for every non-deleted file in the folder tree along with
+ * a presigned S3 URL the client can fetch directly. The browser is expected
+ * to stream-zip the files using these URLs (the API does not touch bytes).
+ *
+ * Response shape:
+ *   {
+ *     folderName: string,
+ *     totalBytes: number,
+ *     expiresAt: string,
+ *     files: [{ zipPath: string, url: string, size: number }, ...]
+ *   }
  */
 foldersRouter
-  .route("/:id/download/prepare")
-  .post(protectedRoute(), async (req: Request, res: Response) => {
+  .route("/:id/download-manifest")
+  .get(protectedRoute(), async (req: Request, res: Response) => {
     try {
       const user = req.user as IUser;
       const { id } = req.params;
@@ -278,32 +299,8 @@ foldersRouter
         });
       }
 
-      const job = await getOrCreateZipJob(user.id, id);
-      return res.status(200).json({ jobId: job.id, status: job.status });
-    } catch (error) {
-      return res.status(500).json({
-        status: "error",
-        error: true,
-        errorMsg: (error as Error).message,
-      });
-    }
-  });
-
-/**
- * GET /api/folders/:id/download/status/:jobId
- * Returns { status, url?, expiresAt?, error? }.
- * For status==='ready', returns a CloudFront signed URL when configured,
- * otherwise an S3 presigned URL with ResponseContentDisposition baked in.
- */
-foldersRouter
-  .route("/:id/download/status/:jobId")
-  .get(protectedRoute(), async (req: Request, res: Response) => {
-    try {
-      const user = req.user as IUser;
-      const { id, jobId } = req.params;
-
-      const hasAccess = await canAccessFolder(user.id, id);
-      if (!hasAccess) {
+      const folder = await getFolderById(id);
+      if (!folder) {
         return res.status(404).json({
           status: "error",
           error: true,
@@ -311,7 +308,9 @@ foldersRouter
         });
       }
 
-      return await respondWithZipJobStatus(req, res, jobId, user.id, id);
+      const secrets = req.app.get("secrets") as IAppSecrets;
+      const manifest = await buildDownloadManifest(folder.name, id, secrets);
+      return res.status(200).json(manifest);
     } catch (error) {
       return res.status(500).json({
         status: "error",
@@ -320,88 +319,6 @@ foldersRouter
       });
     }
   });
-
-/**
- * Resolve a zip-job by id (DB row or deterministic cache id) and produce the
- * { status, url?, expiresAt?, error? } response payload.
- */
-async function respondWithZipJobStatus(
-  req: Request,
-  res: Response,
-  jobId: string,
-  ownerUserId: string,
-  folderId: string
-): Promise<Response> {
-  let job: IZipJob | undefined;
-
-  if (jobId.startsWith("cache-")) {
-    const hash = jobId.slice("cache-".length);
-    job = {
-      id: jobId,
-      user_id: ownerUserId,
-      folder_id: folderId,
-      zip_hash: hash,
-      s3_key: `zip-cache/${ownerUserId}/${hash}.zip`,
-      status: "ready",
-      error: null,
-      created_at: new Date().toISOString(),
-      completed_at: new Date().toISOString(),
-    };
-  } else {
-    const db = getDb();
-    job = await db("zip_jobs").where({ id: jobId }).first();
-    if (!job) {
-      return res.status(404).json({
-        status: "error",
-        error: true,
-        errorMsg: "Zip job not found",
-      });
-    }
-    if (job.user_id !== ownerUserId) {
-      return res.status(404).json({
-        status: "error",
-        error: true,
-        errorMsg: "Zip job not found",
-      });
-    }
-  }
-
-  if (job.status !== "ready") {
-    return res.status(200).json({
-      status: job.status,
-      ...(job.error ? { error: job.error } : {}),
-    });
-  }
-
-  const folder = await getFolderById(job.folder_id);
-  const folderName = folder?.name ?? "download";
-  const disposition = `attachment; filename="${folderName}.zip"`;
-
-  const secrets = req.app.get("secrets") as IAppSecrets;
-  const ttl = Number(secrets.PREVIEW_URL_TTL ?? 900);
-
-  let url: string;
-  if (
-    secrets.CLOUDFRONT_DOMAIN &&
-    secrets.CLOUDFRONT_KEY_PAIR_ID &&
-    secrets.CLOUDFRONT_PRIVATE_KEY
-  ) {
-    url = generateSignedCloudFrontUrl(
-      secrets.CLOUDFRONT_DOMAIN,
-      job.s3_key,
-      secrets.CLOUDFRONT_KEY_PAIR_ID,
-      secrets.CLOUDFRONT_PRIVATE_KEY,
-      ttl
-    );
-  } else {
-    url = await generatePresignedDownloadUrl(job.s3_key, ttl, disposition);
-  }
-
-  const expiresAt = new Date(Date.now() + ttl * 1000).toISOString();
-  return res.status(200).json({ status: job.status, url, expiresAt });
-}
-
-export { respondWithZipJobStatus };
 
 /**
  * POST /api/folders/:id/restore

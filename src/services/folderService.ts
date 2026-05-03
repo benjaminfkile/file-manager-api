@@ -183,11 +183,13 @@ export async function restoreFolder(folderId: string): Promise<void> {
 
 /**
  * Collect all non-deleted files in a folder tree with their relative zip paths.
- * Returns an array of { s3_key, zipPath } where zipPath preserves directory structure.
+ * Returns an array of { s3_key, zipPath, size_bytes } where zipPath preserves
+ * the directory structure (root folder name is excluded — the caller is
+ * expected to wrap the entries under the folder's name itself).
  */
 export async function collectFolderFiles(
   rootId: string
-): Promise<{ s3_key: string; zipPath: string }[]> {
+): Promise<{ s3_key: string; zipPath: string; size_bytes: number }[]> {
   const db = getDb();
 
   // Get all descendant folder ids (non-deleted only)
@@ -228,15 +230,16 @@ export async function collectFolderFiles(
   const folderIds = folders.map((f) => f.id);
 
   // Get all non-deleted files in these folders
-  const files: Pick<IFile, "s3_key" | "name" | "folder_id">[] = await db(FILES)
-    .whereIn("folder_id", folderIds)
-    .where({ is_deleted: false })
-    .select("s3_key", "name", "folder_id");
+  const files: Pick<IFile, "s3_key" | "name" | "folder_id" | "size_bytes">[] =
+    await db(FILES)
+      .whereIn("folder_id", folderIds)
+      .where({ is_deleted: false })
+      .select("s3_key", "name", "folder_id", "size_bytes");
 
   return files.map((f) => {
     const folderPath = getFolderPath(f.folder_id!);
     const zipPath = folderPath ? `${folderPath}/${f.name}` : f.name;
-    return { s3_key: f.s3_key, zipPath };
+    return { s3_key: f.s3_key, zipPath, size_bytes: Number(f.size_bytes) };
   });
 }
 
