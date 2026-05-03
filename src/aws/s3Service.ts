@@ -198,6 +198,25 @@ export async function abortMultipartUpload(key: string, uploadId: string): Promi
   );
 }
 
+export function getS3Client(): S3Client {
+  return getClient();
+}
+
+export function getBucketName(): string {
+  return getBucket();
+}
+
+export async function s3KeyExists(key: string): Promise<boolean> {
+  try {
+    await getClient().send(
+      new HeadObjectCommand({ Bucket: getBucket(), Key: key })
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function generateSignedCloudFrontUrl(
   domain: string,
   key: string,
