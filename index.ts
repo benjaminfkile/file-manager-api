@@ -6,7 +6,7 @@ import app from "./src/app";
 import { getAppSecrets } from "./src/aws/getAppSecrets";
 import { getDBSecrets } from "./src/aws/getDBSecrets";
 import { initDb } from "./src/db/db";
-import { initS3 } from "./src/aws/s3Service";
+import { initS3, ensureZipCacheLifecycleRule } from "./src/aws/s3Service";
 import { startUploadSweeper } from "./src/services/uploadSweeper";
 import morgan from "morgan";
 
@@ -23,6 +23,15 @@ async function start() {
     app.set("secrets", appSecrets);
 
     initS3(appSecrets.S3_BUCKET_NAME);
+
+    try {
+      await ensureZipCacheLifecycleRule();
+    } catch (err) {
+      console.error(
+        "[Startup] Failed to ensure zip-cache lifecycle rule (continuing):",
+        err
+      );
+    }
 
     const morganFormat =
       appSecrets.NODE_ENV === "production" ? "tiny" : "common";
