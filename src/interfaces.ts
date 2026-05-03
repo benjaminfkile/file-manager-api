@@ -13,6 +13,7 @@ export interface IAppSecrets {
   MAX_FILE_BYTES?: string;
   PREVIEW_URL_TTL?: string;
   FOLDER_DOWNLOAD_URL_TTL?: string;
+  UPLOAD_PART_URL_TTL?: string;
   COGNITO_USER_POOL_ID: string;
   COGNITO_CLIENT_ID: string;
   COGNITO_REGION: string;

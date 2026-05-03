@@ -146,23 +146,25 @@ export async function initiateMultipartUpload(key: string, contentType: string):
   return response.UploadId;
 }
 
-/** Uploads one part. Returns the ETag string (include surrounding quotes — S3 returns them). */
-export async function uploadPart(key: string, uploadId: string, partNumber: number, body: Buffer): Promise<string> {
-  const response = await getClient().send(
-    new UploadPartCommand({
-      Bucket: getBucket(),
-      Key: key,
-      UploadId: uploadId,
-      PartNumber: partNumber,
-      Body: body,
-    })
-  );
-
-  if (!response.ETag) {
-    throw new Error("S3 did not return an ETag");
-  }
-
-  return response.ETag;
+/**
+ * Generates a presigned PUT URL the browser can use to upload one multipart
+ * part directly to S3 — bypassing this API server entirely. The browser PUTs
+ * the chunk body to the returned URL and reads the resulting ETag from the
+ * response headers (S3 sends `ETag` on a successful UploadPart).
+ */
+export async function generatePresignedUploadPartUrl(
+  key: string,
+  uploadId: string,
+  partNumber: number,
+  expiresInSeconds: number
+): Promise<string> {
+  const command = new UploadPartCommand({
+    Bucket: getBucket(),
+    Key: key,
+    UploadId: uploadId,
+    PartNumber: partNumber,
+  });
+  return getSignedUrl(getClient(), command, { expiresIn: expiresInSeconds });
 }
 
 /** Finalises the multipart upload. parts must be sorted by PartNumber ascending. */

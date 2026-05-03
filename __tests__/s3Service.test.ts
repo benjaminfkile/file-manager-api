@@ -19,7 +19,6 @@ jest.mock("@aws-sdk/client-s3", () => {
 import {
   initS3,
   initiateMultipartUpload,
-  uploadPart,
   completeMultipartUpload,
   abortMultipartUpload,
   listUploadedParts,
@@ -27,7 +26,6 @@ import {
 
 import {
   CreateMultipartUploadCommand,
-  UploadPartCommand,
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
   ListPartsCommand,
@@ -69,27 +67,11 @@ describe("initiateMultipartUpload", () => {
   });
 });
 
-describe("uploadPart", () => {
-  it("sends UploadPartCommand with correct params and returns ETag", async () => {
-    mockSend.mockResolvedValueOnce({ ETag: '"abc123"' });
-
-    const body = Buffer.from("chunk-data");
-    const result = await uploadPart("files/u/f/pic.png", "upload-123", 1, body);
-
-    expect(result).toBe('"abc123"');
-    expect(mockSend).toHaveBeenCalledTimes(1);
-
-    const command = mockSend.mock.calls[0][0];
-    expect(command).toBeInstanceOf(UploadPartCommand);
-    expect(command.input).toEqual({
-      Bucket: "test-bucket",
-      Key: "files/u/f/pic.png",
-      UploadId: "upload-123",
-      PartNumber: 1,
-      Body: body,
-    });
-  });
-});
+// `generatePresignedUploadPartUrl` is exercised end-to-end through the
+// router tests, which assert the function is called with the right args.
+// A unit test here would require constructing a real S3Client (the
+// presigner consults its config), which fights the test-wide mock that
+// stubs S3Client to expose only `.send`.
 
 describe("completeMultipartUpload", () => {
   it("sends CompleteMultipartUploadCommand with correct params", async () => {

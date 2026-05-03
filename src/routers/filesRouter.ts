@@ -1,9 +1,9 @@
-import express, { NextFunction, Request, Response } from "express";
+import express, { Request, Response } from "express";
 import { randomUUID } from "crypto";
 import { IAppSecrets, IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
 import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDeleteFile, restoreFile, hardDeleteFile, listRootFiles, moveFile, createUploadSession, getUploadSession, deleteUploadSession } from "../services/fileService";
-import { buildS3Key, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject, initiateMultipartUpload, uploadPart, completeMultipartUpload, abortMultipartUpload, listUploadedParts } from "../aws/s3Service";
+import { buildS3Key, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject, initiateMultipartUpload, generatePresignedUploadPartUrl, completeMultipartUpload, abortMultipartUpload, listUploadedParts } from "../aws/s3Service";
 import { canAccessFile } from "../utils/accessControl";
 import { getDeletedFolderById, getFolderById } from "../services/folderService";
 import { shareFile, unshareFile, getFileSharesWithUsers } from "../services/sharingService";
@@ -14,24 +14,8 @@ const filesRouter = express.Router();
 const DEFAULT_CLIENT_CHUNK_SIZE = 10 * 1024 * 1024;
 const MAX_PART_COUNT = 9500;
 const DEFAULT_MAX_FILE_BYTES = 5 * 1024 ** 4;
-const PART_BODY_LIMIT = "60mb";
-
-function rawPartBody(limit: string) {
-  const parser = express.raw({ type: "application/octet-stream", limit });
-  return (req: Request, res: Response, next: NextFunction) => {
-    parser(req, res, (err: any) => {
-      if (err && (err.status === 413 || err.statusCode === 413 || err.type === "entity.too.large")) {
-        return res.status(413).json({
-          status: "error",
-          error: true,
-          errorMsg: `Chunk exceeds maximum part size of ${limit}`,
-        });
-      }
-      if (err) return next(err);
-      next();
-    });
-  };
-}
+const DEFAULT_UPLOAD_PART_URL_TTL_SECONDS = 6 * 60 * 60;
+const MAX_PART_URLS_PER_REQUEST = 10000;
 
 /**
  * GET /api/files
@@ -152,66 +136,106 @@ filesRouter
   });
 
 /**
- * PUT /api/files/uploads/:fileId/parts/:partNumber
- * Upload a single part of a multipart upload. Behind protectedRoute.
- * Body: raw binary (application/octet-stream)
+ * POST /api/files/uploads/:fileId/part-urls
+ *
+ * Returns a presigned S3 PUT URL for each requested part number. The browser
+ * uploads chunks directly to S3 using these URLs — bytes never flow through
+ * this server.
+ *
+ * Body: { partNumbers: number[] } — each must be a positive integer ≤ 10000.
+ * Response: { urls: [{ partNumber, url }], expiresAt }
  */
 filesRouter
-  .route("/uploads/:fileId/parts/:partNumber")
-  .put(
-    protectedRoute(),
-    rawPartBody(PART_BODY_LIMIT),
-    async (req: Request, res: Response) => {
-      try {
-        const user = req.user as IUser;
-        const { fileId } = req.params;
+  .route("/uploads/:fileId/part-urls")
+  .post(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { fileId } = req.params;
+      const { partNumbers } = req.body;
 
-        const partNumber = parseInt(req.params.partNumber, 10);
-        if (isNaN(partNumber) || partNumber < 1 || partNumber > 10000) {
-          return res.status(400).json({
-            status: "error",
-            error: true,
-            errorMsg: "partNumber must be an integer between 1 and 10000",
-          });
-        }
-
-        if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
-          return res.status(400).json({
-            status: "error",
-            error: true,
-            errorMsg: "Request body must be a non-empty binary buffer",
-          });
-        }
-
-        const session = await getUploadSession(fileId);
-        if (!session) {
-          return res.status(404).json({
-            status: "error",
-            error: true,
-            errorMsg: "Upload session not found",
-          });
-        }
-
-        if (session.user_id !== user.id) {
-          return res.status(403).json({
-            status: "error",
-            error: true,
-            errorMsg: "Access denied",
-          });
-        }
-
-        const etag = await uploadPart(session.s3_key, session.s3_upload_id, partNumber, req.body as Buffer);
-
-        return res.status(200).json({ partNumber, etag });
-      } catch (error) {
-        return res.status(500).json({
+      if (!Array.isArray(partNumbers) || partNumbers.length === 0) {
+        return res.status(400).json({
           status: "error",
           error: true,
-          errorMsg: (error as Error).message,
+          errorMsg: "partNumbers must be a non-empty array of integers",
         });
       }
+
+      if (partNumbers.length > MAX_PART_URLS_PER_REQUEST) {
+        return res.status(400).json({
+          status: "error",
+          error: true,
+          errorMsg: `partNumbers must contain at most ${MAX_PART_URLS_PER_REQUEST} entries`,
+        });
+      }
+
+      const seen = new Set<number>();
+      for (const n of partNumbers) {
+        if (
+          typeof n !== "number" ||
+          !Number.isInteger(n) ||
+          n < 1 ||
+          n > 10000
+        ) {
+          return res.status(400).json({
+            status: "error",
+            error: true,
+            errorMsg: "Each partNumber must be an integer between 1 and 10000",
+          });
+        }
+        if (seen.has(n)) {
+          return res.status(400).json({
+            status: "error",
+            error: true,
+            errorMsg: "partNumbers must not contain duplicates",
+          });
+        }
+        seen.add(n);
+      }
+
+      const session = await getUploadSession(fileId);
+      if (!session) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "Upload session not found",
+        });
+      }
+      if (session.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Access denied",
+        });
+      }
+
+      const secrets = req.app.get("secrets") as IAppSecrets;
+      const ttl = Number(
+        secrets.UPLOAD_PART_URL_TTL ?? DEFAULT_UPLOAD_PART_URL_TTL_SECONDS
+      );
+
+      const urls = await Promise.all(
+        partNumbers.map(async (partNumber: number) => ({
+          partNumber,
+          url: await generatePresignedUploadPartUrl(
+            session.s3_key,
+            session.s3_upload_id,
+            partNumber,
+            ttl
+          ),
+        }))
+      );
+
+      const expiresAt = new Date(Date.now() + ttl * 1000).toISOString();
+      return res.status(200).json({ urls, expiresAt });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
     }
-  );
+  });
 
 /**
  * GET /api/files/uploads/:fileId/parts

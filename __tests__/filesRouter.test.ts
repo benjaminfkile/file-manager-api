@@ -160,7 +160,7 @@ import {
   generateSignedCloudFrontUrl,
   deleteObject,
   initiateMultipartUpload,
-  uploadPart,
+  generatePresignedUploadPartUrl,
   completeMultipartUpload,
   abortMultipartUpload,
   listUploadedParts,
@@ -1122,10 +1122,10 @@ describe("POST /api/files/uploads/initiate", () => {
 });
 
 /* ================================================================== */
-/*  PUT /api/files/uploads/:fileId/parts/:partNumber – Upload part     */
+/*  POST /api/files/uploads/:fileId/part-urls – Presigned PUT URLs     */
 /* ================================================================== */
 
-describe("PUT /api/files/uploads/:fileId/parts/:partNumber", () => {
+describe("POST /api/files/uploads/:fileId/part-urls", () => {
   const fakeSession = {
     id: "session-1111",
     user_id: testUser.id,
@@ -1144,149 +1144,130 @@ describe("PUT /api/files/uploads/:fileId/parts/:partNumber", () => {
     user_id: otherUser.id,
   };
 
-  it("returns 200 with { partNumber, etag } on valid binary body", async () => {
-    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
-    (uploadPart as jest.Mock).mockResolvedValue('"etag-abc123"');
-
-    const res = await request(app)
-      .put(`/api/files/uploads/${fakeSession.id}/parts/1`)
-      .set("Content-Type", "application/octet-stream")
-      .send(Buffer.from("binary chunk data"));
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ partNumber: 1, etag: '"etag-abc123"' });
+  beforeEach(() => {
+    app.set("secrets", {
+      NODE_ENV: "development",
+      PORT: "3000",
+      DB_NAME: "testdb",
+      DB_HOST: "localhost",
+      DB_PROXY_URL: "",
+      S3_BUCKET_NAME: "test-bucket",
+    });
   });
 
-  it("calls uploadPart with correct key, uploadId, partNumber, and body buffer", async () => {
-    const bodyBuffer = Buffer.from("test binary data");
+  it("returns 200 with one signed URL per requested partNumber", async () => {
     (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
-    (uploadPart as jest.Mock).mockResolvedValue('"etag-xyz"');
+    (generatePresignedUploadPartUrl as jest.Mock).mockImplementation(
+      async (_key: string, _uploadId: string, partNumber: number) =>
+        `https://s3.example/put?part=${partNumber}&sig=x`
+    );
 
-    await request(app)
-      .put(`/api/files/uploads/${fakeSession.id}/parts/3`)
-      .set("Content-Type", "application/octet-stream")
-      .send(bodyBuffer);
+    const res = await request(app)
+      .post(`/api/files/uploads/${fakeSession.id}/part-urls`)
+      .send({ partNumbers: [1, 2, 3] });
 
-    expect(uploadPart).toHaveBeenCalledWith(
+    expect(res.status).toBe(200);
+    expect(res.body.urls).toEqual([
+      { partNumber: 1, url: "https://s3.example/put?part=1&sig=x" },
+      { partNumber: 2, url: "https://s3.example/put?part=2&sig=x" },
+      { partNumber: 3, url: "https://s3.example/put?part=3&sig=x" },
+    ]);
+    expect(typeof res.body.expiresAt).toBe("string");
+
+    expect(generatePresignedUploadPartUrl).toHaveBeenCalledTimes(3);
+    expect(generatePresignedUploadPartUrl).toHaveBeenCalledWith(
       fakeSession.s3_key,
       fakeSession.s3_upload_id,
-      3,
-      expect.any(Buffer)
+      1,
+      expect.any(Number)
     );
-    const calledBody = (uploadPart as jest.Mock).mock.calls[0][3];
-    expect(calledBody.toString()).toBe("test binary data");
   });
 
-  it("returns 400 when :partNumber is not a number (e.g., 'abc')", async () => {
-    const res = await request(app)
-      .put(`/api/files/uploads/${fakeSession.id}/parts/abc`)
-      .set("Content-Type", "application/octet-stream")
-      .send(Buffer.from("data"));
+  it("returns 400 when partNumbers is missing or empty", async () => {
+    const res1 = await request(app)
+      .post(`/api/files/uploads/${fakeSession.id}/part-urls`)
+      .send({});
+    expect(res1.status).toBe(400);
 
+    const res2 = await request(app)
+      .post(`/api/files/uploads/${fakeSession.id}/part-urls`)
+      .send({ partNumbers: [] });
+    expect(res2.status).toBe(400);
+  });
+
+  it("returns 400 when a partNumber is out of range", async () => {
+    const res1 = await request(app)
+      .post(`/api/files/uploads/${fakeSession.id}/part-urls`)
+      .send({ partNumbers: [0] });
+    expect(res1.status).toBe(400);
+
+    const res2 = await request(app)
+      .post(`/api/files/uploads/${fakeSession.id}/part-urls`)
+      .send({ partNumbers: [10001] });
+    expect(res2.status).toBe(400);
+
+    const res3 = await request(app)
+      .post(`/api/files/uploads/${fakeSession.id}/part-urls`)
+      .send({ partNumbers: [1.5] });
+    expect(res3.status).toBe(400);
+  });
+
+  it("returns 400 when partNumbers contains duplicates", async () => {
+    const res = await request(app)
+      .post(`/api/files/uploads/${fakeSession.id}/part-urls`)
+      .send({ partNumbers: [1, 2, 2, 3] });
     expect(res.status).toBe(400);
-    expect(res.body.errorMsg).toMatch(/partNumber/);
+    expect(res.body.errorMsg).toMatch(/duplicates/);
   });
 
-  it("returns 400 when :partNumber is 0 (out of range)", async () => {
-    const res = await request(app)
-      .put(`/api/files/uploads/${fakeSession.id}/parts/0`)
-      .set("Content-Type", "application/octet-stream")
-      .send(Buffer.from("data"));
-
-    expect(res.status).toBe(400);
-    expect(res.body.errorMsg).toMatch(/partNumber/);
-  });
-
-  it("returns 400 when :partNumber is 10001 (out of range)", async () => {
-    const res = await request(app)
-      .put(`/api/files/uploads/${fakeSession.id}/parts/10001`)
-      .set("Content-Type", "application/octet-stream")
-      .send(Buffer.from("data"));
-
-    expect(res.status).toBe(400);
-    expect(res.body.errorMsg).toMatch(/partNumber/);
-  });
-
-  it("returns 400 when body is empty", async () => {
-    const res = await request(app)
-      .put(`/api/files/uploads/${fakeSession.id}/parts/1`)
-      .set("Content-Type", "application/octet-stream")
-      .send(Buffer.alloc(0));
-
-    expect(res.status).toBe(400);
-    expect(res.body.errorMsg).toMatch(/non-empty/);
-  });
-
-  it("accepts a chunk well above the old 15 MB limit (e.g., 50 MB)", async () => {
-    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
-    (uploadPart as jest.Mock).mockResolvedValue('"etag-large"');
-
-    const fiftyMb = Buffer.alloc(50 * 1024 * 1024);
-
-    const res = await request(app)
-      .put(`/api/files/uploads/${fakeSession.id}/parts/1`)
-      .set("Content-Type", "application/octet-stream")
-      .send(fiftyMb);
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ partNumber: 1, etag: '"etag-large"' });
-    expect(uploadPart).toHaveBeenCalled();
-  }, 20000);
-
-  it("rejects a chunk that exceeds the 60 MB part-body limit", async () => {
-    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
-
-    const oversized = Buffer.alloc(61 * 1024 * 1024);
-
-    const res = await request(app)
-      .put(`/api/files/uploads/${fakeSession.id}/parts/1`)
-      .set("Content-Type", "application/octet-stream")
-      .send(oversized);
-
-    expect(res.status).toBe(413);
-    expect(res.body.errorMsg).toMatch(/60mb/);
-    expect(uploadPart).not.toHaveBeenCalled();
-  }, 20000);
-
-  it("returns 404 when fileId does not exist in upload_sessions", async () => {
+  it("returns 404 when the upload session does not exist", async () => {
     (getUploadSession as jest.Mock).mockResolvedValue(null);
 
     const res = await request(app)
-      .put("/api/files/uploads/nonexistent-id/parts/1")
-      .set("Content-Type", "application/octet-stream")
-      .send(Buffer.from("data"));
+      .post("/api/files/uploads/nonexistent/part-urls")
+      .send({ partNumbers: [1] });
 
     expect(res.status).toBe(404);
-    expect(res.body.errorMsg).toMatch(/Upload session not found/);
+    expect(generatePresignedUploadPartUrl).not.toHaveBeenCalled();
   });
 
-  it("returns 403 when session belongs to a different user", async () => {
+  it("returns 403 when the session belongs to another user", async () => {
     (getUploadSession as jest.Mock).mockResolvedValue(otherUserSession);
 
     const res = await request(app)
-      .put(`/api/files/uploads/${otherUserSession.id}/parts/1`)
-      .set("Content-Type", "application/octet-stream")
-      .send(Buffer.from("data"));
+      .post(`/api/files/uploads/${otherUserSession.id}/part-urls`)
+      .send({ partNumbers: [1] });
 
     expect(res.status).toBe(403);
-    expect(res.body.errorMsg).toBe("Access denied");
+    expect(generatePresignedUploadPartUrl).not.toHaveBeenCalled();
   });
 
-  it("returns 401 when unauthenticated", async () => {
-    // The mock always sets req.user, so we verify the route is behind protectedRoute.
-    // In production, without a valid token, protectedRoute returns 401.
-    const res = await request(app)
-      .put(`/api/files/uploads/${fakeSession.id}/parts/1`)
-      .set("Content-Type", "application/octet-stream")
-      .send(Buffer.alloc(0));
+  it("uses UPLOAD_PART_URL_TTL secret when set, otherwise defaults", async () => {
+    app.set("secrets", {
+      NODE_ENV: "development",
+      PORT: "3000",
+      DB_NAME: "testdb",
+      DB_HOST: "localhost",
+      DB_PROXY_URL: "",
+      S3_BUCKET_NAME: "test-bucket",
+      UPLOAD_PART_URL_TTL: "7200",
+    });
 
-    // Without valid body we get 400, proving the middleware ran (set req.user)
-    // and the handler executed. In production, without a valid token,
-    // protectedRoute would return 401 before reaching the handler.
-    expect(res.status).toBe(400);
-    const protectedRoute = require("../src/middleware/protectedRoute").default;
-    expect(protectedRoute).toBeDefined();
-    expect(typeof protectedRoute).toBe("function");
+    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
+    (generatePresignedUploadPartUrl as jest.Mock).mockResolvedValue(
+      "https://s3.example/put"
+    );
+
+    await request(app)
+      .post(`/api/files/uploads/${fakeSession.id}/part-urls`)
+      .send({ partNumbers: [1] });
+
+    expect(generatePresignedUploadPartUrl).toHaveBeenCalledWith(
+      fakeSession.s3_key,
+      fakeSession.s3_upload_id,
+      1,
+      7200
+    );
   });
 });
 
