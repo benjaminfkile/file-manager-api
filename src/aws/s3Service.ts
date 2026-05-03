@@ -109,11 +109,15 @@ export async function deleteObjects(keys: string[]): Promise<void> {
 
 export async function generatePresignedDownloadUrl(
   key: string,
-  expiresInSeconds: number
+  expiresInSeconds: number,
+  responseContentDisposition?: string
 ): Promise<string> {
   const command = new GetObjectCommand({
     Bucket: getBucket(),
     Key: key,
+    ...(responseContentDisposition
+      ? { ResponseContentDisposition: responseContentDisposition }
+      : {}),
   });
 
   return getSignedUrl(getClient(), command, { expiresIn: expiresInSeconds });
