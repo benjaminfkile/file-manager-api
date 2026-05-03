@@ -13,8 +13,6 @@ import { getOrCreateZipJob } from "../services/zipJobService";
 import {
   generatePresignedDownloadUrl,
   generateSignedCloudFrontUrl,
-  getObjectStream,
-  headObject,
 } from "../aws/s3Service";
 import { respondWithZipJobStatus } from "./foldersRouter";
 import { IAppSecrets, IShareLink, IUser } from "../interfaces";
@@ -296,6 +294,8 @@ shareLinkRouter
 
 /**
  * GET /api/share-links/:token/files/:fileId/download
+ * Returns { url, expiresAt } where url is an S3 presigned URL that forces
+ * Content-Disposition: attachment so the browser saves the file.
  */
 shareLinkRouter
   .route("/:token/files/:fileId/download")
@@ -320,24 +320,23 @@ shareLinkRouter
           .json({ error: true, errorMsg: "File is not accessible via this share link" });
       }
 
-      const { contentLength, contentType } = await headObject(file.s3_key);
-      const stream = await getObjectStream(file.s3_key);
-
       const encodedName = encodeURIComponent(file.name).replace(/'/g, "%27");
       const safeName = file.name.replace(/"/g, '\\"');
+      const disposition = `attachment; filename="${safeName}"; filename*=UTF-8''${encodedName}`;
 
-      res.setHeader("Content-Type", contentType);
-      res.setHeader("Content-Length", contentLength);
-      res.setHeader(
-        "Content-Disposition",
-        `attachment; filename="${safeName}"; filename*=UTF-8''${encodedName}`
+      const secrets = req.app.get("secrets") as IAppSecrets;
+      const expiresIn = Number(secrets.PREVIEW_URL_TTL ?? 900);
+
+      const url = await generatePresignedDownloadUrl(
+        file.s3_key,
+        expiresIn,
+        disposition
       );
+      const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
 
-      stream.pipe(res);
+      return res.status(200).json({ url, expiresAt });
     } catch (err: any) {
-      if (!res.headersSent) {
-        return res.status(500).json({ error: true, errorMsg: err.message });
-      }
+      return res.status(500).json({ error: true, errorMsg: err.message });
     }
   });
 
