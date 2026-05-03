@@ -10,6 +10,7 @@ export async function createUser(
   lastName: string,
   username: string,
   cognitoSub: string,
+  email: string | null = null,
   expiresAt: Date | null = null,
 ): Promise<Omit<IUser, "cognito_sub" | "updated_at">> {
   const db = getDb();
@@ -25,9 +26,18 @@ export async function createUser(
       last_name: lastName,
       username,
       cognito_sub: cognitoSub,
+      email,
       expires_at: expiresAt ? expiresAt.toISOString() : null,
     })
-    .returning(["id", "first_name", "last_name", "username", "expires_at", "created_at"]);
+    .returning([
+      "id",
+      "first_name",
+      "last_name",
+      "username",
+      "email",
+      "expires_at",
+      "created_at",
+    ]);
 
   return user;
 }
@@ -67,6 +77,21 @@ export async function getUserByCognitoSub(sub: string): Promise<IUser | null> {
 export async function findExpiredUsers(): Promise<IUser[]> {
   const db = getDb();
   return db<IUser>(USERS).whereRaw("expires_at IS NOT NULL AND expires_at < NOW()");
+}
+
+/**
+ * Returns users whose email is set but does not appear in `allowed_users`.
+ * Used by the production sweeper pass to wipe accounts whose access was
+ * revoked. Rows with NULL email are skipped — they were created before
+ * email tracking existed and need manual handling.
+ */
+export async function findUsersNotInAllowList(): Promise<IUser[]> {
+  const db = getDb();
+  return db<IUser>(USERS)
+    .leftJoin("allowed_users", "users.email", "allowed_users.email")
+    .whereNotNull("users.email")
+    .whereNull("allowed_users.email")
+    .select("users.*");
 }
 
 /**

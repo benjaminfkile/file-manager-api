@@ -26,6 +26,7 @@ export interface IUser {
   last_name: string;
   username: string;
   cognito_sub: string | null;
+  email: string | null;
   expires_at: string | null;
   created_at: string;
   updated_at: string;

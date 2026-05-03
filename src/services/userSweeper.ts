@@ -1,12 +1,17 @@
 import { getDb } from "../db/db";
 import { IUser } from "../interfaces";
-import { findExpiredUsers, deleteUserCompletely } from "./userService";
+import {
+  findExpiredUsers,
+  findUsersNotInAllowList,
+  deleteUserCompletely,
+} from "./userService";
 import { listAllCognitoUsers, deleteCognitoUserBySub } from "../aws/cognitoAdmin";
 
 const SWEEP_INTERVAL_MS = 60 * 1000;
 const ORPHAN_GRACE_MS = 10 * 60 * 1000;
 
 let timer: NodeJS.Timeout | null = null;
+let isProduction = false;
 
 /**
  * Deletes any user whose `expires_at` has elapsed. Returns the number of
@@ -83,8 +88,40 @@ export async function sweepOrphanCognitoUsers(): Promise<number> {
   return deleted;
 }
 
+/**
+ * Production-only: deletes any user whose email is no longer in the
+ * `allowed_users` table. Lets the operator revoke access by simply removing
+ * an allow-list row — within one tick (60s) the account, S3 contents, and
+ * Cognito user are all gone.
+ *
+ * No-op outside production: dev relies on the TTL sweep, and the allow-list
+ * isn't enforced at registration there either.
+ */
+export async function sweepDisallowedUsers(): Promise<number> {
+  if (!isProduction) return 0;
+
+  const disallowed = await findUsersNotInAllowList();
+
+  for (const user of disallowed) {
+    try {
+      await deleteUserCompletely(user);
+    } catch (err) {
+      console.warn(
+        `[userSweeper] failed to sweep disallowed user ${user.id}:`,
+        (err as Error).message
+      );
+    }
+  }
+
+  if (disallowed.length > 0) {
+    console.log(`[userSweeper] swept ${disallowed.length} disallowed user(s)`);
+  }
+  return disallowed.length;
+}
+
 export async function runUserSweep(): Promise<void> {
   await sweepExpiredUsers();
+  await sweepDisallowedUsers();
   await sweepOrphanCognitoUsers();
 }
 
@@ -92,8 +129,12 @@ export async function runUserSweep(): Promise<void> {
  * Starts the periodic sweeper. Runs once immediately, then every 60s.
  * No-op if already started or if `process.env.DISABLE_USER_SWEEPER === "true"`,
  * which lets tests skip the interval.
+ *
+ * `production` toggles the disallowed-user pass — that pass should never run
+ * in dev, where there's no allow-list and accounts are TTL-managed.
  */
-export function startUserSweeper(): void {
+export function startUserSweeper(production = false): void {
+  isProduction = production;
   if (process.env.DISABLE_USER_SWEEPER === "true") return;
   if (timer) return;
 

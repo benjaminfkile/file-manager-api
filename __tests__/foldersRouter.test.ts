@@ -19,6 +19,7 @@ const testUser: IUser = {
   username: "alice",
   cognito_sub: "cognito-sub-aaaa",
   expires_at: null,
+  email: null,
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-01T00:00:00.000Z",
 };
@@ -30,6 +31,7 @@ const otherUser: IUser = {
   username: "bob",
   cognito_sub: "cognito-sub-bbbb",
   expires_at: null,
+  email: null,
   created_at: "2026-01-02T00:00:00.000Z",
   updated_at: "2026-01-02T00:00:00.000Z",
 };
@@ -101,6 +103,7 @@ jest.mock("../src/middleware/protectedRoute", () => {
     username: "alice",
     cognito_sub: "cognito-sub-aaaa",
     expires_at: null,
+    email: null,
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-01T00:00:00.000Z",
   };

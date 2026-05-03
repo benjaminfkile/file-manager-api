@@ -3,9 +3,11 @@
 /* ------------------------------------------------------------------ */
 
 const mockFindExpiredUsers = jest.fn();
+const mockFindUsersNotInAllowList = jest.fn();
 const mockDeleteUserCompletely = jest.fn();
 jest.mock("../src/services/userService", () => ({
   findExpiredUsers: mockFindExpiredUsers,
+  findUsersNotInAllowList: mockFindUsersNotInAllowList,
   deleteUserCompletely: mockDeleteUserCompletely,
 }));
 
@@ -33,6 +35,7 @@ jest.mock("../src/db/db", () => ({
 import {
   sweepExpiredUsers,
   sweepOrphanCognitoUsers,
+  sweepDisallowedUsers,
   startUserSweeper,
   stopUserSweeper,
 } from "../src/services/userSweeper";
@@ -40,10 +43,20 @@ import {
 beforeEach(() => {
   jest.clearAllMocks();
   mockTableBuilder.whereIn.mockImplementation(() => ({ select: mockSelect }));
+  // Default: dev mode (production sweep gated off). Each prod test re-arms
+  // it explicitly via startUserSweeper(true).
+  startUserSweeper.length; // no-op reference; the production flag lives in
+                            // module scope and is reset by stopUserSweeper +
+                            // re-call below in tests that need it.
 });
 
 afterEach(() => {
   stopUserSweeper();
+  delete process.env.DISABLE_USER_SWEEPER;
+  // Reset prod flag back to false for the next test by re-initialising in
+  // dev mode without starting the timer.
+  process.env.DISABLE_USER_SWEEPER = "true";
+  startUserSweeper(false);
   delete process.env.DISABLE_USER_SWEEPER;
 });
 
@@ -168,6 +181,66 @@ describe("sweepOrphanCognitoUsers", () => {
   });
 });
 
+describe("sweepDisallowedUsers", () => {
+  it("is a no-op outside production", async () => {
+    process.env.DISABLE_USER_SWEEPER = "true";
+    startUserSweeper(false); // arm dev mode without starting the timer
+    delete process.env.DISABLE_USER_SWEEPER;
+
+    mockFindUsersNotInAllowList.mockResolvedValue([
+      { id: "u1", cognito_sub: "sub1", email: "a@x.com" },
+    ]);
+
+    const count = await sweepDisallowedUsers();
+
+    expect(count).toBe(0);
+    expect(mockFindUsersNotInAllowList).not.toHaveBeenCalled();
+    expect(mockDeleteUserCompletely).not.toHaveBeenCalled();
+  });
+
+  it("deletes every user not on the allow-list when in production", async () => {
+    process.env.DISABLE_USER_SWEEPER = "true";
+    startUserSweeper(true);
+    delete process.env.DISABLE_USER_SWEEPER;
+
+    const disallowed = [
+      { id: "u1", cognito_sub: "sub1", email: "a@x.com" },
+      { id: "u2", cognito_sub: "sub2", email: "b@x.com" },
+    ];
+    mockFindUsersNotInAllowList.mockResolvedValue(disallowed);
+    mockDeleteUserCompletely.mockResolvedValue(undefined);
+
+    const count = await sweepDisallowedUsers();
+
+    expect(count).toBe(2);
+    expect(mockDeleteUserCompletely).toHaveBeenCalledTimes(2);
+    expect(mockDeleteUserCompletely).toHaveBeenNthCalledWith(1, disallowed[0]);
+    expect(mockDeleteUserCompletely).toHaveBeenNthCalledWith(2, disallowed[1]);
+  });
+
+  it("logs but continues when one disallowed user's deletion fails", async () => {
+    process.env.DISABLE_USER_SWEEPER = "true";
+    startUserSweeper(true);
+    delete process.env.DISABLE_USER_SWEEPER;
+
+    mockFindUsersNotInAllowList.mockResolvedValue([
+      { id: "u1", cognito_sub: "sub1", email: "a@x.com" },
+      { id: "u2", cognito_sub: "sub2", email: "b@x.com" },
+    ]);
+    mockDeleteUserCompletely
+      .mockRejectedValueOnce(new Error("S3 down"))
+      .mockResolvedValueOnce(undefined);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    const count = await sweepDisallowedUsers();
+
+    expect(count).toBe(2);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+});
+
 describe("startUserSweeper toggle", () => {
   it("does not register an interval when DISABLE_USER_SWEEPER=true", () => {
     process.env.DISABLE_USER_SWEEPER = "true";
@@ -181,6 +254,7 @@ describe("startUserSweeper toggle", () => {
 
   it("registers a 60-second interval when not disabled", () => {
     mockFindExpiredUsers.mockResolvedValue([]);
+    mockFindUsersNotInAllowList.mockResolvedValue([]);
     mockListAllCognitoUsers.mockResolvedValue([]);
     const setSpy = jest.spyOn(global, "setInterval");
 

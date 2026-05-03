@@ -34,7 +34,7 @@ async function start() {
     await initDb(dbSecrets, appSecrets);
 
     startUploadSweeper();
-    startUserSweeper();
+    startUserSweeper(appSecrets.NODE_ENV === "production");
 
     const server = http.createServer(app);
 

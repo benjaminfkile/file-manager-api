@@ -91,7 +91,14 @@ usersRouter.route("/register").post(verifyToken(), async (req: Request, res: Res
 
     const expiresAt = isProd ? null : new Date(Date.now() + DEV_ACCOUNT_TTL_MS);
 
-    const user = await createUser(first_name, last_name, username, cognitoSub, expiresAt);
+    const user = await createUser(
+      first_name,
+      last_name,
+      username,
+      cognitoSub,
+      cognitoEmail,
+      expiresAt
+    );
 
     if (isProd && cognitoEmail) {
       await markEmailUsed(cognitoEmail).catch((err) => {
