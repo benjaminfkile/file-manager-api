@@ -1,21 +1,31 @@
 import express, { Request, Response } from "express";
 import { getDb } from "../db/db";
-import { IUser } from "../interfaces";
+import { IAppSecrets, IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
 import verifyToken from "../middleware/verifyToken";
 import { createUser } from "../services/userService";
+import { isEmailAllowed, markEmailUsed } from "../services/allowedUsersService";
+import { deleteCognitoUserBySub } from "../aws/cognitoAdmin";
 
 const usersRouter = express.Router();
+
+const DEV_ACCOUNT_TTL_MS = 60 * 60 * 1000;
 
 /**
  * POST /api/users/register
  * Creates a new user account. Uses verifyToken — the user has a Cognito JWT but no local record yet.
  * Body: { first_name, last_name, username }
+ *
+ * In production: rejects emails not in the `allowed_users` table and deletes
+ * the just-created Cognito user.
+ * In dev: stamps `expires_at = now + 1h` so the demo sweeper later wipes the
+ * account and everything it owns.
  */
 usersRouter.route("/register").post(verifyToken(), async (req: Request, res: Response) => {
   try {
     const { first_name, last_name, username } = req.body;
     const cognitoSub = req.cognitoSub!;
+    const cognitoEmail = req.cognitoEmail ?? null;
 
     // Validate all fields present
     if (!first_name || !last_name || !username) {
@@ -47,7 +57,51 @@ usersRouter.route("/register").post(verifyToken(), async (req: Request, res: Res
       });
     }
 
-    const user = await createUser(first_name, last_name, username, cognitoSub);
+    const secrets = req.app.get("secrets") as IAppSecrets;
+    const isProd = secrets.NODE_ENV === "production";
+
+    if (isProd) {
+      if (!cognitoEmail) {
+        return res.status(400).json({
+          status: "error",
+          error: true,
+          errorMsg: "Email claim missing from token",
+        });
+      }
+      const allowed = await isEmailAllowed(cognitoEmail);
+      if (!allowed) {
+        // Not on the allow-list — purge the Cognito user we just verified so
+        // they can't keep a half-active account around. Logged but otherwise
+        // best-effort: the user sweeper's orphan pass is the safety net.
+        try {
+          await deleteCognitoUserBySub(cognitoSub);
+        } catch (err) {
+          console.warn(
+            `[register] AdminDeleteUser failed for sub ${cognitoSub}:`,
+            (err as Error).message
+          );
+        }
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "This email is not on the allow-list. Reach out to request access.",
+        });
+      }
+    }
+
+    const expiresAt = isProd ? null : new Date(Date.now() + DEV_ACCOUNT_TTL_MS);
+
+    const user = await createUser(first_name, last_name, username, cognitoSub, expiresAt);
+
+    if (isProd && cognitoEmail) {
+      await markEmailUsed(cognitoEmail).catch((err) => {
+        // Non-fatal — the row was created; we just couldn't stamp used_at.
+        console.warn(
+          `[register] markEmailUsed failed for ${cognitoEmail}:`,
+          (err as Error).message
+        );
+      });
+    }
 
     return res.status(201).json({
       status: "ok",
@@ -78,6 +132,7 @@ usersRouter.route("/me").get(protectedRoute(), (req: Request, res: Response) => 
       first_name: user.first_name,
       last_name: user.last_name,
       username: user.username,
+      expires_at: user.expires_at,
       created_at: user.created_at,
     },
   });

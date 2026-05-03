@@ -41,6 +41,7 @@ const fakeUser: IUser = {
   last_name: "Doe",
   username: "janedoe",
   cognito_sub: "cognito-sub-janedoe",
+  expires_at: null,
   created_at: "2026-04-08T00:00:00.000Z",
   updated_at: "2026-04-08T00:00:00.000Z",
 };
@@ -86,9 +87,26 @@ describe("createUser", () => {
       last_name: "Doe",
       username: "janedoe",
       cognito_sub: "cognito-sub-janedoe",
+      expires_at: null,
     });
 
     expect(result).toEqual(returned);
+  });
+
+  it("passes expires_at as an ISO string when provided", async () => {
+    mockQueryBuilder.first.mockResolvedValueOnce(undefined);
+    mockQueryBuilder.returning.mockResolvedValueOnce([fakeUser]);
+
+    const expiry = new Date("2026-05-03T12:00:00.000Z");
+    await createUser("Jane", "Doe", "janedoe", "cognito-sub-janedoe", expiry);
+
+    expect(mockQueryBuilder.insert).toHaveBeenCalledWith({
+      first_name: "Jane",
+      last_name: "Doe",
+      username: "janedoe",
+      cognito_sub: "cognito-sub-janedoe",
+      expires_at: expiry.toISOString(),
+    });
   });
 
   it("throws when the username is already taken", async () => {

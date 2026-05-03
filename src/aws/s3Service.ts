@@ -10,6 +10,8 @@ import {
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
   ListPartsCommand,
+  ListObjectsV2Command,
+  ListObjectsV2CommandOutput,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createPrivateKey, createSign } from "crypto";
@@ -83,14 +85,48 @@ export async function deleteObject(key: string): Promise<void> {
 export async function deleteObjects(keys: string[]): Promise<void> {
   if (keys.length === 0) return;
 
-  await getClient().send(
-    new DeleteObjectsCommand({
-      Bucket: getBucket(),
-      Delete: {
-        Objects: keys.map((key) => ({ Key: key })),
-      },
-    })
-  );
+  // S3 caps DeleteObjects at 1000 keys per call.
+  const BATCH = 1000;
+  for (let i = 0; i < keys.length; i += BATCH) {
+    const slice = keys.slice(i, i + BATCH);
+    await getClient().send(
+      new DeleteObjectsCommand({
+        Bucket: getBucket(),
+        Delete: {
+          Objects: slice.map((key) => ({ Key: key })),
+        },
+      })
+    );
+  }
+}
+
+/**
+ * Lists every key under a prefix, paginating until exhausted. Used by the
+ * user sweeper to wipe `files/{userId}/` when an account expires.
+ */
+export async function listObjectsByPrefix(prefix: string): Promise<string[]> {
+  const client = getClient();
+  const bucketName = getBucket();
+  const collected: string[] = [];
+
+  let continuationToken: string | undefined = undefined;
+  do {
+    const response: ListObjectsV2CommandOutput = await client.send(
+      new ListObjectsV2Command({
+        Bucket: bucketName,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+      })
+    );
+
+    for (const obj of response.Contents ?? []) {
+      if (obj.Key) collected.push(obj.Key);
+    }
+
+    continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+  } while (continuationToken);
+
+  return collected;
 }
 
 export async function generatePresignedDownloadUrl(

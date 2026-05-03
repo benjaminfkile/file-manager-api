@@ -15,6 +15,11 @@ const protectedRoute = () => {
       if (!user) {
         return res.status(401).json({ error: "Unauthorized" });
       }
+      if (user.expires_at && new Date(user.expires_at).getTime() <= Date.now()) {
+        // Demo session is up — distinct error so the FE shows "session expired"
+        // instead of the generic logout flow.
+        return res.status(401).json({ error: "Session expired" });
+      }
       req.user = user;
       next();
     } catch {

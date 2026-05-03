@@ -2,6 +2,7 @@ import knex, { Knex } from "knex";
 import path from "path";
 import { IAppSecrets, IDBSecrets } from "../interfaces";
 import health from "./health";
+import { ExtensionAgnosticMigrationSource } from "./migrationSource";
 
 let db: Knex | null = null;
 
@@ -27,8 +28,9 @@ export async function initDb(
       ssl: { rejectUnauthorized: false },
     },
     migrations: {
-      directory: path.join(__dirname, "migrations"),
-      loadExtensions: ['.js'],
+      migrationSource: new ExtensionAgnosticMigrationSource(
+        path.join(__dirname, "migrations")
+      ),
     },
   });
 

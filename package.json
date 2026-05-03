@@ -10,12 +10,13 @@
     "test": "jest --runInBand --detectOpenHandles",
     "migrate:latest": "knex --knexfile knexfile.ts migrate:latest",
     "migrate:rollback": "knex --knexfile knexfile.ts migrate:rollback",
-    "migrate:make": "knex --knexfile knexfile.ts migrate:make"
+    "migrate:make": "knex --knexfile knexfile.ts migrate:make --migrations-directory src/db/migrations -x ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.1041.0",
     "@aws-sdk/client-s3": "^3.1026.0",
     "@aws-sdk/client-secrets-manager": "^3.664.0",
     "@aws-sdk/cloudfront-signer": "^3.1026.0",

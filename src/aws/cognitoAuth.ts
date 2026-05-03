@@ -2,10 +2,10 @@ import { CognitoJwtVerifier } from "aws-jwt-verify";
 import { getAppSecrets } from "./getAppSecrets";
 
 /**
- * Verifies a Cognito ID token and returns the Cognito subject (sub) claim.
- * Throws if the token is missing, expired, or invalid.
+ * Verifies a Cognito ID token and returns the Cognito subject (sub) and email
+ * claims. Throws if the token is missing, expired, or invalid.
  */
-export async function verifyCognitoToken(token: string): Promise<{ sub: string }> {
+export async function verifyCognitoToken(token: string): Promise<{ sub: string; email: string | null }> {
   const secrets = await getAppSecrets();
 
   const verifier = CognitoJwtVerifier.create({
@@ -15,5 +15,6 @@ export async function verifyCognitoToken(token: string): Promise<{ sub: string }
   });
 
   const payload = await verifier.verify(token);
-  return { sub: payload.sub };
+  const email = typeof payload.email === "string" ? payload.email : null;
+  return { sub: payload.sub, email };
 }

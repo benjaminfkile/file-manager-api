@@ -26,8 +26,19 @@ export interface IUser {
   last_name: string;
   username: string;
   cognito_sub: string | null;
+  expires_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+// ---- Allow-list row: only emails in this table may register in production ----
+export interface IAllowedUser {
+  email: string;
+  first_name: string | null;
+  last_name: string | null;
+  notes: string | null;
+  invited_at: string;
+  used_at: string | null;
 }
 
 // ---- DB secrets (stored in AWS Secrets Manager via AWS_DB_SECRET_ARN) ----

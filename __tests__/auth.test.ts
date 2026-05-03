@@ -28,6 +28,7 @@ const userA: IUser = {
   last_name: "Anderson",
   username: "alice",
   cognito_sub: "cognito-sub-aaaa",
+  expires_at: null,
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-01T00:00:00.000Z",
 };
@@ -38,6 +39,7 @@ const userB: IUser = {
   last_name: "Baker",
   username: "bob",
   cognito_sub: "cognito-sub-bbbb",
+  expires_at: null,
   created_at: "2026-01-02T00:00:00.000Z",
   updated_at: "2026-01-02T00:00:00.000Z",
 };
@@ -95,7 +97,7 @@ describe("protectedRoute auth middleware", () => {
   });
 
   it("returns 200 and populates req.user with a valid token", async () => {
-    mockVerifyCognitoToken.mockResolvedValueOnce({ sub: userA.cognito_sub });
+    mockVerifyCognitoToken.mockResolvedValueOnce({ sub: userA.cognito_sub, email: null });
     mockGetUserByCognitoSub.mockResolvedValueOnce({ ...userA });
 
     const res = await request(app)
@@ -113,7 +115,7 @@ describe("protectedRoute auth middleware", () => {
 
   it("authenticates two different users with different tokens correctly", async () => {
     // User A authenticates
-    mockVerifyCognitoToken.mockResolvedValueOnce({ sub: userA.cognito_sub });
+    mockVerifyCognitoToken.mockResolvedValueOnce({ sub: userA.cognito_sub, email: null });
     mockGetUserByCognitoSub.mockResolvedValueOnce({ ...userA });
 
     const resA = await request(app)
@@ -125,7 +127,7 @@ describe("protectedRoute auth middleware", () => {
     expect(resA.body.user.id).toBe(userA.id);
 
     // User B authenticates
-    mockVerifyCognitoToken.mockResolvedValueOnce({ sub: userB.cognito_sub });
+    mockVerifyCognitoToken.mockResolvedValueOnce({ sub: userB.cognito_sub, email: null });
     mockGetUserByCognitoSub.mockResolvedValueOnce({ ...userB });
 
     const resB = await request(app)
@@ -135,5 +137,30 @@ describe("protectedRoute auth middleware", () => {
     expect(resB.status).toBe(200);
     expect(resB.body.user.username).toBe("bob");
     expect(resB.body.user.id).toBe(userB.id);
+  });
+
+  it("returns 401 with 'Session expired' when the user's expires_at has elapsed", async () => {
+    const expiredUser = { ...userA, expires_at: new Date(Date.now() - 60_000).toISOString() };
+    mockVerifyCognitoToken.mockResolvedValueOnce({ sub: expiredUser.cognito_sub, email: null });
+    mockGetUserByCognitoSub.mockResolvedValueOnce(expiredUser);
+
+    const res = await request(app)
+      .get("/protected")
+      .set("authorization", "Bearer expired.token");
+
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: "Session expired" });
+  });
+
+  it("allows access when expires_at is in the future", async () => {
+    const liveUser = { ...userA, expires_at: new Date(Date.now() + 60_000).toISOString() };
+    mockVerifyCognitoToken.mockResolvedValueOnce({ sub: liveUser.cognito_sub, email: null });
+    mockGetUserByCognitoSub.mockResolvedValueOnce(liveUser);
+
+    const res = await request(app)
+      .get("/protected")
+      .set("authorization", "Bearer live.token");
+
+    expect(res.status).toBe(200);
   });
 });
