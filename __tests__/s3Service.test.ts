@@ -22,6 +22,8 @@ import {
   uploadPart,
   completeMultipartUpload,
   abortMultipartUpload,
+  listUploadedParts,
+  ensureZipCacheLifecycleRule,
 } from "../src/aws/s3Service";
 
 import {
@@ -29,6 +31,9 @@ import {
   UploadPartCommand,
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
+  ListPartsCommand,
+  GetBucketLifecycleConfigurationCommand,
+  PutBucketLifecycleConfigurationCommand,
 } from "@aws-sdk/client-s3";
 
 /* ------------------------------------------------------------------ */
@@ -110,6 +115,154 @@ describe("completeMultipartUpload", () => {
       UploadId: "upload-123",
       MultipartUpload: { Parts: parts },
     });
+  });
+});
+
+describe("listUploadedParts", () => {
+  it("sends ListPartsCommand with correct params and returns mapped parts", async () => {
+    mockSend.mockResolvedValueOnce({
+      Parts: [
+        { PartNumber: 1, ETag: '"abc"', Size: 1024 },
+        { PartNumber: 2, ETag: '"def"', Size: 2048 },
+      ],
+      IsTruncated: false,
+    });
+
+    const result = await listUploadedParts("files/u/f/pic.png", "upload-123");
+
+    expect(result).toEqual([
+      { partNumber: 1, etag: '"abc"', size: 1024 },
+      { partNumber: 2, etag: '"def"', size: 2048 },
+    ]);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+
+    const command = mockSend.mock.calls[0][0];
+    expect(command).toBeInstanceOf(ListPartsCommand);
+    expect(command.input).toEqual({
+      Bucket: "test-bucket",
+      Key: "files/u/f/pic.png",
+      UploadId: "upload-123",
+    });
+  });
+
+  it("paginates when IsTruncated is true, following NextPartNumberMarker", async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        Parts: [{ PartNumber: 1, ETag: '"a"', Size: 5 }],
+        IsTruncated: true,
+        NextPartNumberMarker: "1",
+      })
+      .mockResolvedValueOnce({
+        Parts: [{ PartNumber: 2, ETag: '"b"', Size: 6 }],
+        IsTruncated: true,
+        NextPartNumberMarker: "2",
+      })
+      .mockResolvedValueOnce({
+        Parts: [{ PartNumber: 3, ETag: '"c"', Size: 7 }],
+        IsTruncated: false,
+      });
+
+    const result = await listUploadedParts("k", "u");
+
+    expect(result).toEqual([
+      { partNumber: 1, etag: '"a"', size: 5 },
+      { partNumber: 2, etag: '"b"', size: 6 },
+      { partNumber: 3, etag: '"c"', size: 7 },
+    ]);
+    expect(mockSend).toHaveBeenCalledTimes(3);
+
+    const firstInput = mockSend.mock.calls[0][0].input;
+    expect(firstInput.PartNumberMarker).toBeUndefined();
+    expect(mockSend.mock.calls[1][0].input.PartNumberMarker).toBe("1");
+    expect(mockSend.mock.calls[2][0].input.PartNumberMarker).toBe("2");
+  });
+
+  it("returns an empty array when no parts have been uploaded yet", async () => {
+    mockSend.mockResolvedValueOnce({ IsTruncated: false });
+
+    const result = await listUploadedParts("k", "u");
+
+    expect(result).toEqual([]);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ensureZipCacheLifecycleRule", () => {
+  it("is a noop when a rule with ID 'expire-zip-cache' already exists", async () => {
+    mockSend.mockResolvedValueOnce({
+      Rules: [
+        {
+          ID: "expire-zip-cache",
+          Status: "Enabled",
+          Filter: { Prefix: "zip-cache/" },
+          Expiration: { Days: 7 },
+        },
+      ],
+    });
+
+    await ensureZipCacheLifecycleRule();
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0][0]).toBeInstanceOf(
+      GetBucketLifecycleConfigurationCommand
+    );
+  });
+
+  it("puts the rule when no lifecycle configuration exists, preserving an empty rule list", async () => {
+    const noSuchConfig: any = new Error("No lifecycle configuration");
+    noSuchConfig.name = "NoSuchLifecycleConfiguration";
+    mockSend.mockRejectedValueOnce(noSuchConfig);
+    mockSend.mockResolvedValueOnce({});
+
+    await ensureZipCacheLifecycleRule();
+
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockSend.mock.calls[0][0]).toBeInstanceOf(
+      GetBucketLifecycleConfigurationCommand
+    );
+
+    const putCommand = mockSend.mock.calls[1][0];
+    expect(putCommand).toBeInstanceOf(PutBucketLifecycleConfigurationCommand);
+    expect(putCommand.input).toEqual({
+      Bucket: "test-bucket",
+      LifecycleConfiguration: {
+        Rules: [
+          {
+            ID: "expire-zip-cache",
+            Status: "Enabled",
+            Filter: { Prefix: "zip-cache/" },
+            Expiration: { Days: 7 },
+          },
+        ],
+      },
+    });
+  });
+
+  it("merges with existing rules when the zip-cache rule is absent", async () => {
+    const existingRule = {
+      ID: "archive-old-files",
+      Status: "Enabled",
+      Filter: { Prefix: "archive/" },
+      Expiration: { Days: 365 },
+    };
+    mockSend.mockResolvedValueOnce({ Rules: [existingRule] });
+    mockSend.mockResolvedValueOnce({});
+
+    await ensureZipCacheLifecycleRule();
+
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    const putCommand = mockSend.mock.calls[1][0];
+    expect(putCommand).toBeInstanceOf(PutBucketLifecycleConfigurationCommand);
+    expect(putCommand.input.Bucket).toBe("test-bucket");
+    expect(putCommand.input.LifecycleConfiguration.Rules).toEqual([
+      existingRule,
+      {
+        ID: "expire-zip-cache",
+        Status: "Enabled",
+        Filter: { Prefix: "zip-cache/" },
+        Expiration: { Days: 7 },
+      },
+    ]);
   });
 });
 

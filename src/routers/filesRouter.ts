@@ -1,15 +1,37 @@
-import express, { Request, Response } from "express";
+import express, { NextFunction, Request, Response } from "express";
 import { randomUUID } from "crypto";
 import { IAppSecrets, IUser } from "../interfaces";
 import protectedRoute from "../middleware/protectedRoute";
 import { createFileRecord, getFileById, getDeletedFileById, renameFile, softDeleteFile, restoreFile, hardDeleteFile, listRootFiles, moveFile, createUploadSession, getUploadSession, deleteUploadSession } from "../services/fileService";
-import { buildS3Key, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject, getObjectStream, headObject, initiateMultipartUpload, uploadPart, completeMultipartUpload, abortMultipartUpload } from "../aws/s3Service";
+import { buildS3Key, generatePresignedDownloadUrl, generateSignedCloudFrontUrl, deleteObject, initiateMultipartUpload, uploadPart, completeMultipartUpload, abortMultipartUpload, listUploadedParts } from "../aws/s3Service";
 import { canAccessFile } from "../utils/accessControl";
 import { getDeletedFolderById, getFolderById } from "../services/folderService";
 import { shareFile, unshareFile, getFileSharesWithUsers } from "../services/sharingService";
 import { getDb } from "../db/db";
 
 const filesRouter = express.Router();
+
+const DEFAULT_CLIENT_CHUNK_SIZE = 10 * 1024 * 1024;
+const MAX_PART_COUNT = 9500;
+const DEFAULT_MAX_FILE_BYTES = 5 * 1024 ** 4;
+const PART_BODY_LIMIT = "60mb";
+
+function rawPartBody(limit: string) {
+  const parser = express.raw({ type: "application/octet-stream", limit });
+  return (req: Request, res: Response, next: NextFunction) => {
+    parser(req, res, (err: any) => {
+      if (err && (err.status === 413 || err.statusCode === 413 || err.type === "entity.too.large")) {
+        return res.status(413).json({
+          status: "error",
+          error: true,
+          errorMsg: `Chunk exceeds maximum part size of ${limit}`,
+        });
+      }
+      if (err) return next(err);
+      next();
+    });
+  };
+}
 
 /**
  * GET /api/files
@@ -41,7 +63,7 @@ filesRouter
   .post(protectedRoute(), async (req: Request, res: Response) => {
     try {
       const user = req.user as IUser;
-      const { filename, mimeType, size, folderId } = req.body;
+      const { filename, mimeType, size, folderId, clientChunkSize } = req.body;
 
       if (!filename || typeof filename !== "string" || filename.trim().length === 0) {
         return res.status(400).json({
@@ -68,12 +90,39 @@ filesRouter
       }
 
       const secrets = req.app.get("secrets") as IAppSecrets;
-      const maxBytes = Number(secrets.MAX_UPLOAD_BYTES);
-      if (maxBytes >= 1 && size > maxBytes) {
+      const maxFileBytes =
+        secrets.MAX_FILE_BYTES != null && Number(secrets.MAX_FILE_BYTES) > 0
+          ? Number(secrets.MAX_FILE_BYTES)
+          : DEFAULT_MAX_FILE_BYTES;
+      if (size > maxFileBytes) {
         return res.status(413).json({
           status: "error",
           error: true,
-          errorMsg: `File exceeds maximum upload size of ${maxBytes} bytes`,
+          errorMsg: `File exceeds maximum size of ${maxFileBytes} bytes`,
+        });
+      }
+
+      let chunkSize = DEFAULT_CLIENT_CHUNK_SIZE;
+      if (clientChunkSize != null) {
+        if (
+          typeof clientChunkSize !== "number" ||
+          !Number.isInteger(clientChunkSize) ||
+          clientChunkSize < 1
+        ) {
+          return res.status(400).json({
+            status: "error",
+            error: true,
+            errorMsg: "clientChunkSize must be a positive integer",
+          });
+        }
+        chunkSize = clientChunkSize;
+      }
+      const expectedParts = Math.ceil(size / chunkSize);
+      if (expectedParts > MAX_PART_COUNT) {
+        return res.status(400).json({
+          status: "error",
+          error: true,
+          errorMsg: "File too large for client chunk size",
         });
       }
 
@@ -111,7 +160,7 @@ filesRouter
   .route("/uploads/:fileId/parts/:partNumber")
   .put(
     protectedRoute(),
-    express.raw({ type: "application/octet-stream", limit: "15mb" }),
+    rawPartBody(PART_BODY_LIMIT),
     async (req: Request, res: Response) => {
       try {
         const user = req.user as IUser;
@@ -163,6 +212,48 @@ filesRouter
       }
     }
   );
+
+/**
+ * GET /api/files/uploads/:fileId/parts
+ * List parts already uploaded for an in-progress multipart upload.
+ * Behind protectedRoute. Verifies session ownership.
+ * Returns 200 { parts: [{ partNumber, etag, size }] }.
+ */
+filesRouter
+  .route("/uploads/:fileId/parts")
+  .get(protectedRoute(), async (req: Request, res: Response) => {
+    try {
+      const user = req.user as IUser;
+      const { fileId } = req.params;
+
+      const session = await getUploadSession(fileId);
+      if (!session) {
+        return res.status(404).json({
+          status: "error",
+          error: true,
+          errorMsg: "Upload session not found",
+        });
+      }
+
+      if (session.user_id !== user.id) {
+        return res.status(403).json({
+          status: "error",
+          error: true,
+          errorMsg: "Access denied",
+        });
+      }
+
+      const parts = await listUploadedParts(session.s3_key, session.s3_upload_id);
+
+      return res.status(200).json({ parts });
+    } catch (error) {
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
+    }
+  });
 
 /**
  * POST /api/files/uploads/:fileId/complete
@@ -284,8 +375,8 @@ filesRouter
 
 /**
  * GET /api/files/:id/download
- * Stream the file from S3 directly to the client with Content-Disposition: attachment
- * so the browser always saves it rather than displaying it inline.
+ * Returns { url, expiresAt } where url is an S3 presigned URL that forces
+ * Content-Disposition: attachment so the browser saves the file.
  */
 filesRouter
   .route("/:id/download")
@@ -305,29 +396,28 @@ filesRouter
 
       const file = (await getFileById(fileId))!;
 
-      const { contentLength, contentType } = await headObject(file.s3_key);
-      const stream = await getObjectStream(file.s3_key);
-
       // RFC 5987 encoded filename so non-ASCII names survive the header
       const encodedName = encodeURIComponent(file.name).replace(/'/g, "%27");
       const safeName = file.name.replace(/"/g, '\\"');
+      const disposition = `attachment; filename="${safeName}"; filename*=UTF-8''${encodedName}`;
 
-      res.setHeader("Content-Type", contentType);
-      res.setHeader("Content-Length", contentLength);
-      res.setHeader(
-        "Content-Disposition",
-        `attachment; filename="${safeName}"; filename*=UTF-8''${encodedName}`
+      const secrets = req.app.get("secrets") as IAppSecrets;
+      const expiresIn = Number(secrets.PREVIEW_URL_TTL ?? 900);
+
+      const url = await generatePresignedDownloadUrl(
+        file.s3_key,
+        expiresIn,
+        disposition
       );
+      const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
 
-      stream.pipe(res);
+      return res.status(200).json({ url, expiresAt });
     } catch (error) {
-      if (!res.headersSent) {
-        return res.status(500).json({
-          status: "error",
-          error: true,
-          errorMsg: (error as Error).message,
-        });
-      }
+      return res.status(500).json({
+        status: "error",
+        error: true,
+        errorMsg: (error as Error).message,
+      });
     }
   });
 

@@ -9,6 +9,10 @@ import {
   UploadPartCommand,
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
+  ListPartsCommand,
+  GetBucketLifecycleConfigurationCommand,
+  PutBucketLifecycleConfigurationCommand,
+  type LifecycleRule,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createPrivateKey, createSign } from "crypto";
@@ -109,11 +113,19 @@ export async function deleteObjects(keys: string[]): Promise<void> {
 
 export async function generatePresignedDownloadUrl(
   key: string,
-  expiresInSeconds: number
+  expiresInSeconds: number,
+  responseContentDisposition?: string,
+  responseContentType?: string
 ): Promise<string> {
   const command = new GetObjectCommand({
     Bucket: getBucket(),
     Key: key,
+    ...(responseContentDisposition
+      ? { ResponseContentDisposition: responseContentDisposition }
+      : {}),
+    ...(responseContentType
+      ? { ResponseContentType: responseContentType }
+      : {}),
   });
 
   return getSignedUrl(getClient(), command, { expiresIn: expiresInSeconds });
@@ -187,6 +199,48 @@ export async function completeMultipartUpload(
   );
 }
 
+/**
+ * Lists every uploaded part for an in-progress multipart upload, following
+ * S3 pagination until all parts have been collected.
+ */
+export async function listUploadedParts(
+  key: string,
+  uploadId: string
+): Promise<{ partNumber: number; etag: string; size: number }[]> {
+  const client = getClient();
+  const bucketName = getBucket();
+  const collected: { partNumber: number; etag: string; size: number }[] = [];
+
+  let partNumberMarker: string | undefined = undefined;
+  while (true) {
+    const response: any = await client.send(
+      new ListPartsCommand({
+        Bucket: bucketName,
+        Key: key,
+        UploadId: uploadId,
+        ...(partNumberMarker !== undefined ? { PartNumberMarker: partNumberMarker } : {}),
+      })
+    );
+
+    const parts = response.Parts ?? [];
+    for (const p of parts) {
+      collected.push({
+        partNumber: p.PartNumber ?? 0,
+        etag: p.ETag ?? "",
+        size: p.Size ?? 0,
+      });
+    }
+
+    if (!response.IsTruncated) break;
+
+    const next = response.NextPartNumberMarker;
+    if (next === undefined || next === null) break;
+    partNumberMarker = String(next);
+  }
+
+  return collected;
+}
+
 /** Aborts an in-progress upload and releases its staged S3 storage. */
 export async function abortMultipartUpload(key: string, uploadId: string): Promise<void> {
   await getClient().send(
@@ -194,6 +248,72 @@ export async function abortMultipartUpload(key: string, uploadId: string): Promi
       Bucket: getBucket(),
       Key: key,
       UploadId: uploadId,
+    })
+  );
+}
+
+export function getS3Client(): S3Client {
+  return getClient();
+}
+
+export function getBucketName(): string {
+  return getBucket();
+}
+
+export async function s3KeyExists(key: string): Promise<boolean> {
+  try {
+    await getClient().send(
+      new HeadObjectCommand({ Bucket: getBucket(), Key: key })
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const ZIP_CACHE_LIFECYCLE_RULE_ID = "expire-zip-cache";
+
+/**
+ * Ensures the bucket has a lifecycle rule that expires `zip-cache/*` objects
+ * after 7 days. Idempotent: if a rule with ID `expire-zip-cache` already
+ * exists, returns without making changes. Otherwise merges the rule into the
+ * existing configuration (preserving any other rules) via PutBucketLifecycleConfiguration.
+ */
+export async function ensureZipCacheLifecycleRule(): Promise<void> {
+  const client = getClient();
+  const bucketName = getBucket();
+
+  const desiredRule: LifecycleRule = {
+    ID: ZIP_CACHE_LIFECYCLE_RULE_ID,
+    Status: "Enabled",
+    Filter: { Prefix: "zip-cache/" },
+    Expiration: { Days: 7 },
+  };
+
+  let existingRules: LifecycleRule[] = [];
+  try {
+    const response = await client.send(
+      new GetBucketLifecycleConfigurationCommand({ Bucket: bucketName })
+    );
+    existingRules = response.Rules ?? [];
+  } catch (err: any) {
+    // S3 returns NoSuchLifecycleConfiguration when no config exists yet — treat as empty.
+    const code = err?.name ?? err?.Code;
+    if (code !== "NoSuchLifecycleConfiguration") {
+      throw err;
+    }
+  }
+
+  if (existingRules.some((r) => r.ID === ZIP_CACHE_LIFECYCLE_RULE_ID)) {
+    return;
+  }
+
+  const mergedRules = [...existingRules, desiredRule];
+
+  await client.send(
+    new PutBucketLifecycleConfigurationCommand({
+      Bucket: bucketName,
+      LifecycleConfiguration: { Rules: mergedRules },
     })
   );
 }

@@ -9,11 +9,13 @@ export interface IAppSecrets {
   CLOUDFRONT_DOMAIN?: string;
   CLOUDFRONT_KEY_PAIR_ID?: string;
   CLOUDFRONT_PRIVATE_KEY?: string;
-  MAX_UPLOAD_BYTES: string;
+  MAX_UPLOAD_BYTES?: string;
+  MAX_FILE_BYTES?: string;
   PREVIEW_URL_TTL?: string;
   COGNITO_USER_POOL_ID: string;
   COGNITO_CLIENT_ID: string;
   COGNITO_REGION: string;
+  MAX_CONCURRENT_ZIPS?: string;
 }
 
 // ---- User record from the users table ----
@@ -115,6 +117,19 @@ export interface IUploadSession {
   size_bytes: number;
   folder_id: string | null;
   created_at: string;
+}
+
+// ---- Zip job record from the zip_jobs table ----
+export interface IZipJob {
+  id: string;
+  user_id: string;
+  folder_id: string;
+  zip_hash: string;
+  s3_key: string;
+  status: "pending" | "running" | "ready" | "failed";
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
 }
 
 // ---- DB health check result ----

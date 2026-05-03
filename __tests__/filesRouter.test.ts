@@ -137,6 +137,7 @@ app.set("secrets", {
   DB_PROXY_URL: "",
   S3_BUCKET_NAME: "test-bucket",
   MAX_UPLOAD_BYTES: 10_485_760, // 10 MB
+  PREVIEW_URL_TTL: "900",
 });
 import {
   createFileRecord,
@@ -158,12 +159,11 @@ import {
   generatePresignedDownloadUrl,
   generateSignedCloudFrontUrl,
   deleteObject,
-  headObject,
-  getObjectStream,
   initiateMultipartUpload,
   uploadPart,
   completeMultipartUpload,
   abortMultipartUpload,
+  listUploadedParts,
 } from "../src/aws/s3Service";
 import { shareFile, unshareFile, getFileSharesWithUsers } from "../src/services/sharingService";
 import { getDb } from "../src/db/db";
@@ -184,27 +184,45 @@ beforeEach(() => {
 /* ================================================================== */
 
 describe("GET /api/files/:id/download", () => {
-  it("returns 200 and streams file with correct headers", async () => {
-    const { Readable } = require("stream");
-    const contentBuffer = Buffer.from("file content");
+  it("returns 200 with { url, expiresAt } where url contains response-content-disposition", async () => {
+    const presignedUrl =
+      "https://s3.amazonaws.com/bucket/files/report.pdf" +
+      "?X-Amz-Algorithm=AWS4-HMAC-SHA256" +
+      "&response-content-disposition=" +
+      encodeURIComponent(`attachment; filename="report.pdf"; filename*=UTF-8''report.pdf`);
     (canAccessFile as jest.Mock).mockResolvedValue(true);
     (getFileById as jest.Mock).mockResolvedValue(fakeFile);
-    (headObject as jest.Mock).mockResolvedValue({
-      contentLength: contentBuffer.length,
-      contentType: fakeFile.mime_type,
-    });
-    (getObjectStream as jest.Mock).mockResolvedValue(
-      Readable.from([contentBuffer])
-    );
+    (generatePresignedDownloadUrl as jest.Mock).mockResolvedValue(presignedUrl);
 
     const res = await request(app).get(`/api/files/${fakeFile.id}/download`);
 
     expect(res.status).toBe(200);
-    expect(res.headers["content-type"]).toMatch(/application\/pdf/);
-    expect(res.headers["content-disposition"]).toMatch(/attachment/);
-    expect(res.headers["content-disposition"]).toMatch(/report\.pdf/);
-    expect(headObject).toHaveBeenCalledWith(fakeFile.s3_key);
-    expect(getObjectStream).toHaveBeenCalledWith(fakeFile.s3_key);
+    expect(res.body.url).toBe(presignedUrl);
+    expect(res.body.url).toMatch(/response-content-disposition=/);
+    expect(typeof res.body.expiresAt).toBe("string");
+    expect(generatePresignedDownloadUrl).toHaveBeenCalledWith(
+      fakeFile.s3_key,
+      900,
+      `attachment; filename="report.pdf"; filename*=UTF-8''report.pdf`
+    );
+  });
+
+  it("preserves RFC 5987 encoding for non-ASCII filenames", async () => {
+    const unicodeFile = { ...fakeFile, name: "résumé.pdf" };
+    (canAccessFile as jest.Mock).mockResolvedValue(true);
+    (getFileById as jest.Mock).mockResolvedValue(unicodeFile);
+    (generatePresignedDownloadUrl as jest.Mock).mockResolvedValue(
+      "https://s3.amazonaws.com/bucket/files/resume?response-content-disposition=x"
+    );
+
+    await request(app).get(`/api/files/${unicodeFile.id}/download`);
+
+    const expectedEncoded = encodeURIComponent("résumé.pdf").replace(/'/g, "%27");
+    expect(generatePresignedDownloadUrl).toHaveBeenCalledWith(
+      unicodeFile.s3_key,
+      900,
+      `attachment; filename="résumé.pdf"; filename*=UTF-8''${expectedEncoded}`
+    );
   });
 
   it("returns 404 when user has no access to file", async () => {
@@ -216,15 +234,17 @@ describe("GET /api/files/:id/download", () => {
     expect(res.body.errorMsg).toBe("File not found");
   });
 
-  it("returns 500 when headObject throws", async () => {
+  it("returns 500 when presigned URL generation fails", async () => {
     (canAccessFile as jest.Mock).mockResolvedValue(true);
     (getFileById as jest.Mock).mockResolvedValue(fakeFile);
-    (headObject as jest.Mock).mockRejectedValue(new Error("S3 head error"));
+    (generatePresignedDownloadUrl as jest.Mock).mockRejectedValue(
+      new Error("S3 presign error")
+    );
 
     const res = await request(app).get(`/api/files/${fakeFile.id}/download`);
 
     expect(res.status).toBe(500);
-    expect(res.body.errorMsg).toBe("S3 head error");
+    expect(res.body.errorMsg).toBe("S3 presign error");
   });
 });
 
@@ -989,15 +1009,94 @@ describe("POST /api/files/uploads/initiate", () => {
     expect(res.body.errorMsg).toMatch(/size/);
   });
 
-  it("returns 413 when size exceeds MAX_UPLOAD_BYTES", async () => {
+  it("returns 413 when size exceeds the default MAX_FILE_BYTES (5 TB)", async () => {
+    const fiveTb = 5 * 1024 ** 4;
     const res = await request(app)
       .post("/api/files/uploads/initiate")
-      .send({ filename: "video.mp4", mimeType: "video/mp4", size: 20_000_000 });
+      .send({ filename: "huge.bin", mimeType: "application/octet-stream", size: fiveTb + 1 });
 
     expect(res.status).toBe(413);
-    expect(res.body.errorMsg).toBe(
-      "File exceeds maximum upload size of 10485760 bytes"
-    );
+    expect(res.body.errorMsg).toBe(`File exceeds maximum size of ${fiveTb} bytes`);
+    expect(initiateMultipartUpload).not.toHaveBeenCalled();
+  });
+
+  it("returns 413 when size exceeds an explicit MAX_FILE_BYTES secret", async () => {
+    const original = app.get("secrets");
+    app.set("secrets", { ...original, MAX_FILE_BYTES: "1000000000" }); // 1 GB
+    try {
+      const res = await request(app)
+        .post("/api/files/uploads/initiate")
+        .send({ filename: "big.bin", mimeType: "application/octet-stream", size: 1_000_000_001 });
+
+      expect(res.status).toBe(413);
+      expect(res.body.errorMsg).toBe("File exceeds maximum size of 1000000000 bytes");
+      expect(initiateMultipartUpload).not.toHaveBeenCalled();
+    } finally {
+      app.set("secrets", original);
+    }
+  });
+
+  it("returns 400 when expected part count would exceed 9500 with the client chunk size", async () => {
+    // 10 MB file with 1 KB chunk size → 10000 parts (> 9500)
+    const res = await request(app)
+      .post("/api/files/uploads/initiate")
+      .send({
+        filename: "video.mp4",
+        mimeType: "video/mp4",
+        size: 10_000_000,
+        clientChunkSize: 1024,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errorMsg).toBe("File too large for client chunk size");
+    expect(initiateMultipartUpload).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when default chunk size yields more than 9500 parts", async () => {
+    // No clientChunkSize: default is 10 MB. 9501 * 10MB ≈ 99.6 GB
+    const res = await request(app)
+      .post("/api/files/uploads/initiate")
+      .send({
+        filename: "huge.bin",
+        mimeType: "application/octet-stream",
+        size: 9501 * 10 * 1024 * 1024,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errorMsg).toBe("File too large for client chunk size");
+    expect(initiateMultipartUpload).not.toHaveBeenCalled();
+  });
+
+  it("accepts a large file when clientChunkSize keeps part count within 9500", async () => {
+    // 200 GB file with 50 MB chunks → 4096 parts (under 9500)
+    const fiftyMb = 50 * 1024 * 1024;
+    const size = 200 * 1024 ** 3;
+
+    const res = await request(app)
+      .post("/api/files/uploads/initiate")
+      .send({
+        filename: "video.mp4",
+        mimeType: "video/mp4",
+        size,
+        clientChunkSize: fiftyMb,
+      });
+
+    expect(res.status).toBe(201);
+    expect(initiateMultipartUpload).toHaveBeenCalled();
+  });
+
+  it("returns 400 when clientChunkSize is not a positive integer", async () => {
+    const res = await request(app)
+      .post("/api/files/uploads/initiate")
+      .send({
+        filename: "video.mp4",
+        mimeType: "video/mp4",
+        size: 5_000_000,
+        clientChunkSize: 0,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errorMsg).toMatch(/clientChunkSize/);
   });
 
   it("returns 401 when unauthenticated", async () => {
@@ -1117,6 +1216,37 @@ describe("PUT /api/files/uploads/:fileId/parts/:partNumber", () => {
     expect(res.status).toBe(400);
     expect(res.body.errorMsg).toMatch(/non-empty/);
   });
+
+  it("accepts a chunk well above the old 15 MB limit (e.g., 50 MB)", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
+    (uploadPart as jest.Mock).mockResolvedValue('"etag-large"');
+
+    const fiftyMb = Buffer.alloc(50 * 1024 * 1024);
+
+    const res = await request(app)
+      .put(`/api/files/uploads/${fakeSession.id}/parts/1`)
+      .set("Content-Type", "application/octet-stream")
+      .send(fiftyMb);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ partNumber: 1, etag: '"etag-large"' });
+    expect(uploadPart).toHaveBeenCalled();
+  }, 20000);
+
+  it("rejects a chunk that exceeds the 60 MB part-body limit", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
+
+    const oversized = Buffer.alloc(61 * 1024 * 1024);
+
+    const res = await request(app)
+      .put(`/api/files/uploads/${fakeSession.id}/parts/1`)
+      .set("Content-Type", "application/octet-stream")
+      .send(oversized);
+
+    expect(res.status).toBe(413);
+    expect(res.body.errorMsg).toMatch(/60mb/);
+    expect(uploadPart).not.toHaveBeenCalled();
+  }, 20000);
 
   it("returns 404 when fileId does not exist in upload_sessions", async () => {
     (getUploadSession as jest.Mock).mockResolvedValue(null);
@@ -1444,5 +1574,77 @@ describe("DELETE /api/files/uploads/:fileId", () => {
     await request(app).delete(`/api/files/uploads/${fakeSession.id}`);
 
     expect(deleteUploadSession).toHaveBeenCalledWith(fakeSession.id);
+  });
+});
+
+/* ================================================================== */
+/*  GET /api/files/uploads/:fileId/parts – List uploaded parts         */
+/* ================================================================== */
+
+describe("GET /api/files/uploads/:fileId/parts", () => {
+  const fakeSession = {
+    id: "session-1111",
+    user_id: testUser.id,
+    s3_key: "files/user-1111-1111-1111/session-1111/video.mp4",
+    s3_upload_id: "s3-upload-id-123",
+    filename: "video.mp4",
+    mime_type: "video/mp4",
+    size_bytes: 5_000_000,
+    folder_id: null,
+    created_at: "2026-04-01T00:00:00.000Z",
+  };
+
+  const otherUserSession = {
+    ...fakeSession,
+    id: "session-2222",
+    user_id: otherUser.id,
+  };
+
+  it("returns 200 with { parts } from listUploadedParts", async () => {
+    const fakeParts = [
+      { partNumber: 1, etag: '"abc"', size: 1024 },
+      { partNumber: 2, etag: '"def"', size: 2048 },
+    ];
+    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
+    (listUploadedParts as jest.Mock).mockResolvedValue(fakeParts);
+
+    const res = await request(app).get(`/api/files/uploads/${fakeSession.id}/parts`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ parts: fakeParts });
+    expect(listUploadedParts).toHaveBeenCalledWith(
+      fakeSession.s3_key,
+      fakeSession.s3_upload_id
+    );
+  });
+
+  it("returns 404 when fileId does not exist in upload_sessions", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(null);
+
+    const res = await request(app).get("/api/files/uploads/nonexistent-id/parts");
+
+    expect(res.status).toBe(404);
+    expect(res.body.errorMsg).toMatch(/Upload session not found/);
+    expect(listUploadedParts).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when session belongs to a different user", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(otherUserSession);
+
+    const res = await request(app).get(`/api/files/uploads/${otherUserSession.id}/parts`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.errorMsg).toBe("Access denied");
+    expect(listUploadedParts).not.toHaveBeenCalled();
+  });
+
+  it("returns 500 when listUploadedParts throws", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
+    (listUploadedParts as jest.Mock).mockRejectedValue(new Error("s3 list fail"));
+
+    const res = await request(app).get(`/api/files/uploads/${fakeSession.id}/parts`);
+
+    expect(res.status).toBe(500);
+    expect(res.body.errorMsg).toBe("s3 list fail");
   });
 });
