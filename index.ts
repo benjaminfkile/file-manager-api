@@ -7,6 +7,7 @@ import { getAppSecrets } from "./src/aws/getAppSecrets";
 import { getDBSecrets } from "./src/aws/getDBSecrets";
 import { initDb } from "./src/db/db";
 import { initS3 } from "./src/aws/s3Service";
+import { startUploadSweeper } from "./src/services/uploadSweeper";
 import morgan from "morgan";
 
 process.on("uncaughtException", (err) => {
@@ -30,6 +31,8 @@ async function start() {
     const port = parseInt(appSecrets.PORT) || 8000;
 
     await initDb(dbSecrets, appSecrets);
+
+    startUploadSweeper();
 
     const server = http.createServer(app);
 

@@ -163,6 +163,7 @@ import {
   uploadPart,
   completeMultipartUpload,
   abortMultipartUpload,
+  listUploadedParts,
 } from "../src/aws/s3Service";
 import { shareFile, unshareFile, getFileSharesWithUsers } from "../src/services/sharingService";
 import { getDb } from "../src/db/db";
@@ -1573,5 +1574,77 @@ describe("DELETE /api/files/uploads/:fileId", () => {
     await request(app).delete(`/api/files/uploads/${fakeSession.id}`);
 
     expect(deleteUploadSession).toHaveBeenCalledWith(fakeSession.id);
+  });
+});
+
+/* ================================================================== */
+/*  GET /api/files/uploads/:fileId/parts – List uploaded parts         */
+/* ================================================================== */
+
+describe("GET /api/files/uploads/:fileId/parts", () => {
+  const fakeSession = {
+    id: "session-1111",
+    user_id: testUser.id,
+    s3_key: "files/user-1111-1111-1111/session-1111/video.mp4",
+    s3_upload_id: "s3-upload-id-123",
+    filename: "video.mp4",
+    mime_type: "video/mp4",
+    size_bytes: 5_000_000,
+    folder_id: null,
+    created_at: "2026-04-01T00:00:00.000Z",
+  };
+
+  const otherUserSession = {
+    ...fakeSession,
+    id: "session-2222",
+    user_id: otherUser.id,
+  };
+
+  it("returns 200 with { parts } from listUploadedParts", async () => {
+    const fakeParts = [
+      { partNumber: 1, etag: '"abc"', size: 1024 },
+      { partNumber: 2, etag: '"def"', size: 2048 },
+    ];
+    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
+    (listUploadedParts as jest.Mock).mockResolvedValue(fakeParts);
+
+    const res = await request(app).get(`/api/files/uploads/${fakeSession.id}/parts`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ parts: fakeParts });
+    expect(listUploadedParts).toHaveBeenCalledWith(
+      fakeSession.s3_key,
+      fakeSession.s3_upload_id
+    );
+  });
+
+  it("returns 404 when fileId does not exist in upload_sessions", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(null);
+
+    const res = await request(app).get("/api/files/uploads/nonexistent-id/parts");
+
+    expect(res.status).toBe(404);
+    expect(res.body.errorMsg).toMatch(/Upload session not found/);
+    expect(listUploadedParts).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when session belongs to a different user", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(otherUserSession);
+
+    const res = await request(app).get(`/api/files/uploads/${otherUserSession.id}/parts`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.errorMsg).toBe("Access denied");
+    expect(listUploadedParts).not.toHaveBeenCalled();
+  });
+
+  it("returns 500 when listUploadedParts throws", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
+    (listUploadedParts as jest.Mock).mockRejectedValue(new Error("s3 list fail"));
+
+    const res = await request(app).get(`/api/files/uploads/${fakeSession.id}/parts`);
+
+    expect(res.status).toBe(500);
+    expect(res.body.errorMsg).toBe("s3 list fail");
   });
 });

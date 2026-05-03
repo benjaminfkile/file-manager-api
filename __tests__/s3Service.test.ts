@@ -22,6 +22,7 @@ import {
   uploadPart,
   completeMultipartUpload,
   abortMultipartUpload,
+  listUploadedParts,
 } from "../src/aws/s3Service";
 
 import {
@@ -29,6 +30,7 @@ import {
   UploadPartCommand,
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
+  ListPartsCommand,
 } from "@aws-sdk/client-s3";
 
 /* ------------------------------------------------------------------ */
@@ -110,6 +112,75 @@ describe("completeMultipartUpload", () => {
       UploadId: "upload-123",
       MultipartUpload: { Parts: parts },
     });
+  });
+});
+
+describe("listUploadedParts", () => {
+  it("sends ListPartsCommand with correct params and returns mapped parts", async () => {
+    mockSend.mockResolvedValueOnce({
+      Parts: [
+        { PartNumber: 1, ETag: '"abc"', Size: 1024 },
+        { PartNumber: 2, ETag: '"def"', Size: 2048 },
+      ],
+      IsTruncated: false,
+    });
+
+    const result = await listUploadedParts("files/u/f/pic.png", "upload-123");
+
+    expect(result).toEqual([
+      { partNumber: 1, etag: '"abc"', size: 1024 },
+      { partNumber: 2, etag: '"def"', size: 2048 },
+    ]);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+
+    const command = mockSend.mock.calls[0][0];
+    expect(command).toBeInstanceOf(ListPartsCommand);
+    expect(command.input).toEqual({
+      Bucket: "test-bucket",
+      Key: "files/u/f/pic.png",
+      UploadId: "upload-123",
+    });
+  });
+
+  it("paginates when IsTruncated is true, following NextPartNumberMarker", async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        Parts: [{ PartNumber: 1, ETag: '"a"', Size: 5 }],
+        IsTruncated: true,
+        NextPartNumberMarker: "1",
+      })
+      .mockResolvedValueOnce({
+        Parts: [{ PartNumber: 2, ETag: '"b"', Size: 6 }],
+        IsTruncated: true,
+        NextPartNumberMarker: "2",
+      })
+      .mockResolvedValueOnce({
+        Parts: [{ PartNumber: 3, ETag: '"c"', Size: 7 }],
+        IsTruncated: false,
+      });
+
+    const result = await listUploadedParts("k", "u");
+
+    expect(result).toEqual([
+      { partNumber: 1, etag: '"a"', size: 5 },
+      { partNumber: 2, etag: '"b"', size: 6 },
+      { partNumber: 3, etag: '"c"', size: 7 },
+    ]);
+    expect(mockSend).toHaveBeenCalledTimes(3);
+
+    const firstInput = mockSend.mock.calls[0][0].input;
+    expect(firstInput.PartNumberMarker).toBeUndefined();
+    expect(mockSend.mock.calls[1][0].input.PartNumberMarker).toBe("1");
+    expect(mockSend.mock.calls[2][0].input.PartNumberMarker).toBe("2");
+  });
+
+  it("returns an empty array when no parts have been uploaded yet", async () => {
+    mockSend.mockResolvedValueOnce({ IsTruncated: false });
+
+    const result = await listUploadedParts("k", "u");
+
+    expect(result).toEqual([]);
+    expect(mockSend).toHaveBeenCalledTimes(1);
   });
 });
 
