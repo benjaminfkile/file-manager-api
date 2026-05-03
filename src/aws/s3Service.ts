@@ -9,6 +9,7 @@ import {
   UploadPartCommand,
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
+  ListPartsCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createPrivateKey, createSign } from "crypto";
@@ -193,6 +194,48 @@ export async function completeMultipartUpload(
       MultipartUpload: { Parts: parts },
     })
   );
+}
+
+/**
+ * Lists every uploaded part for an in-progress multipart upload, following
+ * S3 pagination until all parts have been collected.
+ */
+export async function listUploadedParts(
+  key: string,
+  uploadId: string
+): Promise<{ partNumber: number; etag: string; size: number }[]> {
+  const client = getClient();
+  const bucketName = getBucket();
+  const collected: { partNumber: number; etag: string; size: number }[] = [];
+
+  let partNumberMarker: string | undefined = undefined;
+  while (true) {
+    const response: any = await client.send(
+      new ListPartsCommand({
+        Bucket: bucketName,
+        Key: key,
+        UploadId: uploadId,
+        ...(partNumberMarker !== undefined ? { PartNumberMarker: partNumberMarker } : {}),
+      })
+    );
+
+    const parts = response.Parts ?? [];
+    for (const p of parts) {
+      collected.push({
+        partNumber: p.PartNumber ?? 0,
+        etag: p.ETag ?? "",
+        size: p.Size ?? 0,
+      });
+    }
+
+    if (!response.IsTruncated) break;
+
+    const next = response.NextPartNumberMarker;
+    if (next === undefined || next === null) break;
+    partNumberMarker = String(next);
+  }
+
+  return collected;
 }
 
 /** Aborts an in-progress upload and releases its staged S3 storage. */
