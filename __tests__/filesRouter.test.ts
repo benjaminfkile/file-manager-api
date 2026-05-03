@@ -1008,15 +1008,94 @@ describe("POST /api/files/uploads/initiate", () => {
     expect(res.body.errorMsg).toMatch(/size/);
   });
 
-  it("returns 413 when size exceeds MAX_UPLOAD_BYTES", async () => {
+  it("returns 413 when size exceeds the default MAX_FILE_BYTES (5 TB)", async () => {
+    const fiveTb = 5 * 1024 ** 4;
     const res = await request(app)
       .post("/api/files/uploads/initiate")
-      .send({ filename: "video.mp4", mimeType: "video/mp4", size: 20_000_000 });
+      .send({ filename: "huge.bin", mimeType: "application/octet-stream", size: fiveTb + 1 });
 
     expect(res.status).toBe(413);
-    expect(res.body.errorMsg).toBe(
-      "File exceeds maximum upload size of 10485760 bytes"
-    );
+    expect(res.body.errorMsg).toBe(`File exceeds maximum size of ${fiveTb} bytes`);
+    expect(initiateMultipartUpload).not.toHaveBeenCalled();
+  });
+
+  it("returns 413 when size exceeds an explicit MAX_FILE_BYTES secret", async () => {
+    const original = app.get("secrets");
+    app.set("secrets", { ...original, MAX_FILE_BYTES: "1000000000" }); // 1 GB
+    try {
+      const res = await request(app)
+        .post("/api/files/uploads/initiate")
+        .send({ filename: "big.bin", mimeType: "application/octet-stream", size: 1_000_000_001 });
+
+      expect(res.status).toBe(413);
+      expect(res.body.errorMsg).toBe("File exceeds maximum size of 1000000000 bytes");
+      expect(initiateMultipartUpload).not.toHaveBeenCalled();
+    } finally {
+      app.set("secrets", original);
+    }
+  });
+
+  it("returns 400 when expected part count would exceed 9500 with the client chunk size", async () => {
+    // 10 MB file with 1 KB chunk size → 10000 parts (> 9500)
+    const res = await request(app)
+      .post("/api/files/uploads/initiate")
+      .send({
+        filename: "video.mp4",
+        mimeType: "video/mp4",
+        size: 10_000_000,
+        clientChunkSize: 1024,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errorMsg).toBe("File too large for client chunk size");
+    expect(initiateMultipartUpload).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when default chunk size yields more than 9500 parts", async () => {
+    // No clientChunkSize: default is 10 MB. 9501 * 10MB ≈ 99.6 GB
+    const res = await request(app)
+      .post("/api/files/uploads/initiate")
+      .send({
+        filename: "huge.bin",
+        mimeType: "application/octet-stream",
+        size: 9501 * 10 * 1024 * 1024,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errorMsg).toBe("File too large for client chunk size");
+    expect(initiateMultipartUpload).not.toHaveBeenCalled();
+  });
+
+  it("accepts a large file when clientChunkSize keeps part count within 9500", async () => {
+    // 200 GB file with 50 MB chunks → 4096 parts (under 9500)
+    const fiftyMb = 50 * 1024 * 1024;
+    const size = 200 * 1024 ** 3;
+
+    const res = await request(app)
+      .post("/api/files/uploads/initiate")
+      .send({
+        filename: "video.mp4",
+        mimeType: "video/mp4",
+        size,
+        clientChunkSize: fiftyMb,
+      });
+
+    expect(res.status).toBe(201);
+    expect(initiateMultipartUpload).toHaveBeenCalled();
+  });
+
+  it("returns 400 when clientChunkSize is not a positive integer", async () => {
+    const res = await request(app)
+      .post("/api/files/uploads/initiate")
+      .send({
+        filename: "video.mp4",
+        mimeType: "video/mp4",
+        size: 5_000_000,
+        clientChunkSize: 0,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errorMsg).toMatch(/clientChunkSize/);
   });
 
   it("returns 401 when unauthenticated", async () => {
@@ -1136,6 +1215,37 @@ describe("PUT /api/files/uploads/:fileId/parts/:partNumber", () => {
     expect(res.status).toBe(400);
     expect(res.body.errorMsg).toMatch(/non-empty/);
   });
+
+  it("accepts a chunk well above the old 15 MB limit (e.g., 50 MB)", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
+    (uploadPart as jest.Mock).mockResolvedValue('"etag-large"');
+
+    const fiftyMb = Buffer.alloc(50 * 1024 * 1024);
+
+    const res = await request(app)
+      .put(`/api/files/uploads/${fakeSession.id}/parts/1`)
+      .set("Content-Type", "application/octet-stream")
+      .send(fiftyMb);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ partNumber: 1, etag: '"etag-large"' });
+    expect(uploadPart).toHaveBeenCalled();
+  }, 20000);
+
+  it("rejects a chunk that exceeds the 60 MB part-body limit", async () => {
+    (getUploadSession as jest.Mock).mockResolvedValue(fakeSession);
+
+    const oversized = Buffer.alloc(61 * 1024 * 1024);
+
+    const res = await request(app)
+      .put(`/api/files/uploads/${fakeSession.id}/parts/1`)
+      .set("Content-Type", "application/octet-stream")
+      .send(oversized);
+
+    expect(res.status).toBe(413);
+    expect(res.body.errorMsg).toMatch(/60mb/);
+    expect(uploadPart).not.toHaveBeenCalled();
+  }, 20000);
 
   it("returns 404 when fileId does not exist in upload_sessions", async () => {
     (getUploadSession as jest.Mock).mockResolvedValue(null);
