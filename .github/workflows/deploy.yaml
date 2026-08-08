@@ -68,30 +68,22 @@ jobs:
             -t $IMAGE_URI:${{ env.IMAGE_TAG }} \
             --push .
 
-      - name: Cancel any existing instance refresh
+      # Deploy = one authenticated call to the gateway's management API
+      # (machine credential, deploy-only scope). The gateway resolves the tag
+      # to a digest, updates the manifest, and blue-greens the container in
+      # place — no instance refresh.
+      - name: Deploy via gateway
         run: |
-          aws autoscaling cancel-instance-refresh \
-            --auto-scaling-group-name "${{ secrets.ASG_NAME }}" || true
+          GIT_SHA=$(git rev-parse --short HEAD)
+          SERVICE=${{ github.ref_name == 'main' && 'file-manager-api' || 'file-manager-api-dev' }}
 
-      - name: Wait for refresh to cancel
-        run: |
-          while true; do
-            STATUS=$(aws autoscaling describe-instance-refreshes \
-              --auto-scaling-group-name "${{ secrets.ASG_NAME }}" \
-              --query 'InstanceRefreshes[0].Status' --output text)
+          TOKEN=$(curl -sf -X POST "${{ secrets.MGMT_TOKEN_URL }}" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -u "${{ secrets.MGMT_CLIENT_ID }}:${{ secrets.MGMT_CLIENT_SECRET }}" \
+            -d "grant_type=client_credentials&scope=mgmt/deploy" | jq -r .access_token)
 
-            if [ "$STATUS" = "Cancelled" ] || [ "$STATUS" = "None" ] || [ "$STATUS" = "Successful" ] || [ "$STATUS" = "Failed" ]; then
-              echo "No refresh in progress (status: $STATUS)."
-              break
-            fi
-
-            echo "Waiting for cancel... current status: $STATUS"
-            sleep 10
-          done
-
-      - name: Start new instance refresh
-        run: |
-          aws autoscaling start-instance-refresh \
-            --auto-scaling-group-name "${{ secrets.ASG_NAME }}" \
-            --strategy Rolling \
-            --preferences '{"MinHealthyPercentage": 100, "InstanceWarmup": 400}'
+          echo "Deploying ${SERVICE} @ ${GIT_SHA} via gateway..."
+          curl -sf -X POST "https://api.benkile.com/mgmt/services/${SERVICE}/deploy" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"tag\":\"${GIT_SHA}\"}"
