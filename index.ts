@@ -9,7 +9,6 @@ import { initDb } from "./src/db/db";
 import { initS3 } from "./src/aws/s3Service";
 import { startUploadSweeper } from "./src/services/uploadSweeper";
 import { startUserSweeper } from "./src/services/userSweeper";
-import morgan from "morgan";
 
 process.on("uncaughtException", (err) => {
   console.error("[Fatal] Uncaught exception:", err);
@@ -24,10 +23,6 @@ async function start() {
     app.set("secrets", appSecrets);
 
     initS3(appSecrets.S3_BUCKET_NAME);
-
-    const morganFormat =
-      appSecrets.NODE_ENV === "production" ? "tiny" : "common";
-    app.use(morgan(morganFormat));
 
     const port = parseInt(appSecrets.PORT) || 8000;
 

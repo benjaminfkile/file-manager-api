@@ -6,7 +6,12 @@ on:
     paths-ignore:
       - "**/*.md"
 
+# Each environment builds its OWN image because the secret ARNs are baked in at
+# build time. Tags are suffixed per environment so a main push and a dev push at
+# the same commit can never overwrite each other's image (the gateway deploys by
+# exact tag, so a shared "<sha>" tag handed prod config to the dev service).
 env:
+  ENV_SUFFIX: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
   IMAGE_TAG: ${{ github.ref_name == 'main' && 'latest' || 'dev' }}
 
 jobs:
@@ -52,6 +57,7 @@ jobs:
         run: |
           IMAGE_URI=${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}
           GIT_SHA=$(git rev-parse --short HEAD)
+          ENV_TAG=${GIT_SHA}-${{ env.ENV_SUFFIX }}
 
           echo "Initializing Buildx for multi-architecture build..."
           docker buildx create --use || true
@@ -64,7 +70,7 @@ jobs:
             --build-arg AWS_SECRET_ARN=${{ secrets.AWS_SECRET_ARN }} \
             --build-arg AWS_DB_SECRET_ARN=${{ secrets.AWS_DB_SECRET_ARN }} \
             --build-arg PORT=${{ secrets.PORT }} \
-            -t $IMAGE_URI:$GIT_SHA \
+            -t $IMAGE_URI:$ENV_TAG \
             -t $IMAGE_URI:${{ env.IMAGE_TAG }} \
             --push .
 
@@ -75,6 +81,7 @@ jobs:
       - name: Deploy via gateway
         run: |
           GIT_SHA=$(git rev-parse --short HEAD)
+          ENV_TAG=${GIT_SHA}-${{ env.ENV_SUFFIX }}
           SERVICE=${{ github.ref_name == 'main' && 'file-manager-api' || 'file-manager-api-dev' }}
 
           TOKEN=$(curl -sf -X POST "${{ secrets.MGMT_TOKEN_URL }}" \
@@ -82,8 +89,8 @@ jobs:
             -u "${{ secrets.MGMT_CLIENT_ID }}:${{ secrets.MGMT_CLIENT_SECRET }}" \
             -d "grant_type=client_credentials&scope=mgmt/deploy" | jq -r .access_token)
 
-          echo "Deploying ${SERVICE} @ ${GIT_SHA} via gateway..."
+          echo "Deploying ${SERVICE} @ ${ENV_TAG} via gateway..."
           curl -sf -X POST "https://api.benkile.com/mgmt/services/${SERVICE}/deploy" \
             -H "Authorization: Bearer ${TOKEN}" \
             -H "Content-Type: application/json" \
-            -d "{\"tag\":\"${GIT_SHA}\"}"
+            -d "{\"tag\":\"${ENV_TAG}\"}"
